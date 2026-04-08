@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import { fetcher } from "@/lib/api";
 import type {
   OptionChainResponse,
   UnusualOptionsResponse,
@@ -17,9 +16,20 @@ interface SWROptions {
   revalidateOnFocus?: boolean;
 }
 
+const fetcher = async <T,>(url: string): Promise<T> => {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Request failed: ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+};
+
 export function useChain(ticker: string | null, opts: SWROptions = {}) {
-  const key = ticker ? `${BASE}?ticker=${ticker}` : null;
-  return useSWR<OptionChainResponse>(key, fetcher, {
+  const key: string | null = ticker
+    ? `${BASE}?ticker=${encodeURIComponent(ticker)}`
+    : null;
+
+  return useSWR<OptionChainResponse>(key, fetcher<OptionChainResponse>, {
     refreshInterval: opts.refreshInterval ?? 0,
     revalidateOnFocus: opts.revalidateOnFocus ?? false,
     keepPreviousData: true,
@@ -27,8 +37,11 @@ export function useChain(ticker: string | null, opts: SWROptions = {}) {
 }
 
 export function useUnusual(ticker: string | null, opts: SWROptions = {}) {
-  const key = ticker ? `${BASE}/unusual?ticker=${ticker}` : null;
-  return useSWR<UnusualOptionsResponse>(key, fetcher, {
+  const key: string | null = ticker
+    ? `${BASE}/unusual?ticker=${encodeURIComponent(ticker)}`
+    : null;
+
+  return useSWR<UnusualOptionsResponse>(key, fetcher<UnusualOptionsResponse>, {
     refreshInterval: opts.refreshInterval ?? 0,
     revalidateOnFocus: opts.revalidateOnFocus ?? false,
     keepPreviousData: true,
@@ -41,10 +54,11 @@ export function useTop(
   limit = 25,
   opts: SWROptions = {}
 ) {
-  const key = ticker
-    ? `${BASE}/top?ticker=${ticker}&metric=${metric}&limit=${limit}`
+  const key: string | null = ticker
+    ? `${BASE}/top?ticker=${encodeURIComponent(ticker)}&metric=${encodeURIComponent(metric)}&limit=${limit}`
     : null;
-  return useSWR<TopContractsResponse>(key, fetcher, {
+
+  return useSWR<TopContractsResponse>(key, fetcher<TopContractsResponse>, {
     refreshInterval: opts.refreshInterval ?? 0,
     revalidateOnFocus: opts.revalidateOnFocus ?? false,
     keepPreviousData: true,
@@ -52,8 +66,11 @@ export function useTop(
 }
 
 export function useExpirations(ticker: string | null) {
-  const key = ticker ? `${BASE}/expirations?ticker=${ticker}` : null;
-  return useSWR<ExpirationResponse>(key, fetcher, {
+  const key: string | null = ticker
+    ? `${BASE}/expirations?ticker=${encodeURIComponent(ticker)}`
+    : null;
+
+  return useSWR<ExpirationResponse>(key, fetcher<ExpirationResponse>, {
     revalidateOnFocus: false,
     keepPreviousData: true,
   });
