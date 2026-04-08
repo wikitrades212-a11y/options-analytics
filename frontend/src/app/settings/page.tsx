@@ -126,12 +126,20 @@ export default function SettingsPage() {
         </h2>
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-success animate-pulse-fast" />
-          <span className="text-sm text-text-secondary">Robinhood (via robin_stocks)</span>
+          <span className="text-sm text-text-secondary">Tradier (market data API)</span>
         </div>
         <p className="text-xs text-text-muted">
           Provider is configured in the backend <code className="text-text-secondary bg-bg-raised px-1 py-0.5 rounded">.env</code> file.
-          Change <code className="text-text-secondary bg-bg-raised px-1 py-0.5 rounded">DATA_PROVIDER</code> to switch providers.
+          Set <code className="text-text-secondary bg-bg-raised px-1 py-0.5 rounded">TRADIER_TOKEN</code> to authenticate.
         </p>
+        <a
+          href="https://trade.tradier.com/raf-open/?mwr=d02539fb"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline"
+        >
+          Get a Tradier account →
+        </a>
       </div>
 
       {/* Save */}

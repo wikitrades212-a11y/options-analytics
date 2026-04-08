@@ -55,10 +55,20 @@ export default function TopNav() {
           {/* Spacer */}
           <div className="flex-1" />
 
+          {/* Tradier referral CTA */}
+          <a
+            href="https://trade.tradier.com/raf-open/?mwr=d02539fb"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden sm:flex items-center gap-1.5 text-2xs font-medium text-accent/80 hover:text-accent px-2.5 py-1 rounded-md bg-accent/5 border border-accent/20 hover:border-accent/40 transition-colors whitespace-nowrap"
+          >
+            Trade options with Tradier
+          </a>
+
           {/* Provider badge */}
-          <div className="hidden sm:flex items-center gap-2 text-2xs text-text-muted px-2 py-1 rounded-md bg-bg-raised border border-bg-border">
+          <div className="hidden sm:flex items-center gap-2 text-2xs text-text-muted px-2 py-1 rounded-md bg-bg-raised border border-bg-border ml-1">
             <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse-fast" />
-            Robinhood
+            Tradier
           </div>
         </div>
       </div>
