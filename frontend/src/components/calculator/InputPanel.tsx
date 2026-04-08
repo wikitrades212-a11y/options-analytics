@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import clsx from "clsx";
-import { Search, Zap, Calendar, GitCompare } from "lucide-react";
+import { Search, Zap, Calendar, GitCompare, Loader2 } from "lucide-react";
 import type { CalculatorParams } from "@/lib/types";
 
 interface Props {
@@ -70,6 +70,49 @@ export default function InputPanel({
   compareExpiry, onCompareExpiryChange,
 }: Props) {
   const [tickerOpen, setTickerOpen] = useState(false);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [priceFetchError, setPriceFetchError] = useState(false);
+  // Track if user manually edited the price (prevents auto-fill overwrite)
+  const manualPriceRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Detect ticker change to reset manual override
+  const prevTickerRef = useRef(params.ticker);
+  if (params.ticker !== prevTickerRef.current) {
+    prevTickerRef.current = params.ticker;
+    manualPriceRef.current = false;
+    setPriceFetchError(false);
+  }
+
+  // Auto-fetch underlying price when ticker changes
+  useEffect(() => {
+    const ticker = params.ticker;
+    if (!ticker || ticker.length < 1) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setPriceFetchError(false);
+    debounceRef.current = setTimeout(async () => {
+      if (manualPriceRef.current) return;
+      setPriceLoading(true);
+      try {
+        const res = await fetch(`/api/options?ticker=${encodeURIComponent(ticker)}`);
+        if (res.ok) {
+          const json: { underlying_price?: number } = await res.json();
+          const price = json.underlying_price;
+          if (price && price > 0 && !manualPriceRef.current) {
+            onChange({ current_price: price });
+          }
+        } else {
+          setPriceFetchError(true);
+        }
+      } catch {
+        setPriceFetchError(true);
+      }
+      setPriceLoading(false);
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.ticker]);
 
   const movePct = params.current_price > 0 && params.target_price > 0
     ? ((params.target_price - params.current_price) / params.current_price * 100).toFixed(2)
@@ -135,11 +178,23 @@ export default function InputPanel({
 
         {/* Current price */}
         <div className="space-y-1.5">
-          <label className="text-xs text-text-muted font-medium">Current Price</label>
+          <label className="flex items-center gap-1.5 text-xs text-text-muted font-medium">
+            Current Price
+            {priceLoading && (
+              <Loader2 className="w-3 h-3 animate-spin text-accent/60" />
+            )}
+            {priceFetchError && !priceLoading && (
+              <span className="text-2xs text-put/70">enter manually</span>
+            )}
+          </label>
           <input type="number" step="0.01" className="input w-full font-mono"
             value={params.current_price || ""}
-            onChange={e => onChange({ current_price: parseFloat(e.target.value) || 0 })}
-            placeholder="655.00" />
+            onChange={e => {
+              manualPriceRef.current = true;
+              setPriceFetchError(false);
+              onChange({ current_price: parseFloat(e.target.value) || 0 });
+            }}
+            placeholder="auto-filled" />
         </div>
 
         {/* Target price */}

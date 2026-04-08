@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart3, Flame, LineChart, Settings, Target, TrendingUp } from "lucide-react";
+import { Activity, BarChart3, Flame, LineChart, Settings, Target } from "lucide-react";
 import clsx from "clsx";
 
 const NAV_ITEMS = [
@@ -22,11 +22,13 @@ export default function TopNav() {
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center h-14 gap-1">
           {/* Brand */}
-          <div className="flex items-center gap-2 mr-6 shrink-0">
-            <TrendingUp className="w-5 h-5 text-accent" />
-            <span className="text-sm font-semibold text-text-primary tracking-tight">
-              Options<span className="text-accent">Flow</span>
-            </span>
+          <div className="flex items-center mr-6 shrink-0">
+            {/* Replace logo.svg with logo.png once your image is placed at frontend/public/logo.png */}
+            <img
+              src="/logo.svg"
+              alt="OptionsFlow"
+              className="h-8 w-auto object-contain"
+            />
           </div>
 
           {/* Nav links */}
