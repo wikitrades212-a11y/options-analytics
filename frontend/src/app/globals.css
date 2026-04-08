@@ -4,6 +4,32 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Theme variables ──────────────────────────────────────────────────────── */
+:root,
+html.dark {
+  --bg-base:    #0a0b0d;
+  --bg-surface: #111318;
+  --bg-raised:  #181b22;
+  --bg-border:  #242830;
+  --bg-hover:   #1e2229;
+
+  --text-primary:   #e8eaf0;
+  --text-secondary: #8b909e;
+  --text-muted:     #555b6a;
+}
+
+html.light {
+  --bg-base:    #f1f5f9;
+  --bg-surface: #ffffff;
+  --bg-raised:  #f8fafc;
+  --bg-border:  #e2e8f0;
+  --bg-hover:   #edf2f7;
+
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
+  --text-muted:     #94a3b8;
+}
+
 @layer base {
   * {
     box-sizing: border-box;

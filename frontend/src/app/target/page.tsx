@@ -371,23 +371,34 @@ export default function TargetPage() {
         <ErrorState message={`Compare analysis failed: ${(compareError as Error).message}`} />
       )}
 
+      {/* Strategy Visualizer — shown as soon as price is known */}
+      {params.current_price > 0 && (
+        <StrategyVisualizer
+          currentPrice={params.current_price}
+          targetPrice={params.target_price}
+        />
+      )}
+
       {/* Results */}
       {hasResults && (
         <div className="space-y-8">
-          {/* Save to Journal button */}
-          <div className="flex justify-end">
+          {/* Save to Journal — prominent, above results */}
+          <div className="flex items-center gap-3">
             <button
               onClick={saveToJournal}
               className={clsx(
-                "flex items-center gap-2 text-xs font-medium px-3 py-1.5 rounded-lg border transition-all",
+                "flex items-center gap-2 text-sm font-semibold px-4 py-2 rounded-lg border transition-all",
                 justSaved
-                  ? "bg-success/10 border-success/40 text-success"
-                  : "bg-bg-raised border-bg-border text-text-muted hover:text-accent hover:border-accent/40"
+                  ? "bg-success/15 border-success/50 text-success"
+                  : "bg-accent/10 border-accent/40 text-accent hover:bg-accent/20 hover:border-accent/60"
               )}
             >
-              <BookmarkPlus className="w-3.5 h-3.5" />
-              {justSaved ? "Saved!" : "Save to Journal"}
+              <BookmarkPlus className="w-4 h-4" />
+              {justSaved ? "Saved to Journal!" : "Save to Journal"}
             </button>
+            {!justSaved && (
+              <span className="text-xs text-text-muted">Log this setup to review later</span>
+            )}
           </div>
 
           {hasCompare ? (
@@ -400,14 +411,6 @@ export default function TargetPage() {
             <ResultBlock data={data} />
           )}
         </div>
-      )}
-
-      {/* Strategy Visualizer — always available once ticker/prices are set */}
-      {params.current_price > 0 && (
-        <StrategyVisualizer
-          currentPrice={params.current_price}
-          targetPrice={params.target_price}
-        />
       )}
 
       {/* Empty state */}

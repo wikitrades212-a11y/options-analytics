@@ -10,16 +10,16 @@ const config: Config = {
     extend: {
       colors: {
         bg: {
-          base:    "#0a0b0d",
-          surface: "#111318",
-          raised:  "#181b22",
-          border:  "#242830",
-          hover:   "#1e2229",
+          base:    "var(--bg-base)",
+          surface: "var(--bg-surface)",
+          raised:  "var(--bg-raised)",
+          border:  "var(--bg-border)",
+          hover:   "var(--bg-hover)",
         },
         text: {
-          primary:   "#e8eaf0",
-          secondary: "#8b909e",
-          muted:     "#555b6a",
+          primary:   "var(--text-primary)",
+          secondary: "var(--text-secondary)",
+          muted:     "var(--text-muted)",
         },
         call: {
           DEFAULT: "#22c55e",

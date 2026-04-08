@@ -382,20 +382,23 @@ export default function StrategyVisualizer({ currentPrice, targetPrice }: Props)
       >
         <div className="flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-accent" />
-          <h2 className="text-sm font-semibold text-text-primary">Strategy Visualizer</h2>
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary text-left">
+              If price goes here — what happens to my strategy?
+            </h2>
+            {!open && (
+              <p className="text-xs text-text-muted text-left mt-0.5">
+                Current → Target → Payoff. Pick a strategy and see your outcome.
+              </p>
+            )}
+          </div>
         </div>
         {open ? (
-          <ChevronUp className="w-4 h-4 text-text-muted" />
+          <ChevronUp className="w-4 h-4 text-text-muted shrink-0" />
         ) : (
-          <ChevronDown className="w-4 h-4 text-text-muted" />
+          <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
         )}
       </button>
-
-      {!open && (
-        <p className="text-xs text-text-muted">
-          Visualize payoff curves, breakevens, and scenario outcomes for common option strategies.
-        </p>
-      )}
 
       {open && (
         <div className="space-y-5 pt-1">

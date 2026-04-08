@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart3, Flame, LineChart, Settings, Target } from "lucide-react";
+import { Activity, BarChart3, Flame, LineChart, Settings, Target, Sun, Moon } from "lucide-react";
 import clsx from "clsx";
+import { useState, useEffect } from "react";
 
 const NAV_ITEMS = [
   { label: "Dashboard",       href: "/",        icon: Activity },
@@ -13,6 +14,37 @@ const NAV_ITEMS = [
   { label: "Charts",          href: "/charts",  icon: LineChart },
   { label: "Settings",        href: "/settings",icon: Settings },
 ];
+
+function ThemeToggle() {
+  const [isDark, setIsDark] = useState(true);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("theme");
+    const dark = saved !== "light";
+    setIsDark(dark);
+  }, []);
+
+  const toggle = () => {
+    const next = !isDark;
+    setIsDark(next);
+    document.documentElement.className = next ? "dark" : "light";
+    localStorage.setItem("theme", next ? "dark" : "light");
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      className="flex items-center justify-center w-7 h-7 rounded-md text-text-muted hover:text-text-primary hover:bg-bg-raised border border-bg-border transition-colors ml-1"
+    >
+      {isDark ? (
+        <Sun className="w-3.5 h-3.5" />
+      ) : (
+        <Moon className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
 
 export default function TopNav() {
   const pathname = usePathname();
@@ -71,6 +103,9 @@ export default function TopNav() {
             <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse-fast" />
             Tradier
           </div>
+
+          {/* Theme toggle */}
+          <ThemeToggle />
         </div>
       </div>
     </nav>
