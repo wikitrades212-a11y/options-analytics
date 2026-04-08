@@ -23,11 +23,10 @@ export default function TopNav() {
         <div className="flex items-center h-14 gap-1">
           {/* Brand */}
           <div className="flex items-center mr-6 shrink-0">
-            {/* Replace logo.svg with logo.png once your image is placed at frontend/public/logo.png */}
             <img
-              src="/logo.svg"
+              src="/logo.png"
               alt="OptionsFlow"
-              className="h-8 w-auto object-contain"
+              className="h-9 w-auto object-contain"
             />
           </div>
 
