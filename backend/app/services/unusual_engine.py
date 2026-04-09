@@ -1,29 +1,17 @@
 """
-Unusual Options Scoring Engine
+Unusual Options Scoring Engine — Tradable Flow Edition
 
 Contracts are PRE-FILTERED to remove noise before any scoring.
 Remaining contracts are scored with a weighted combination of signals,
 each normalized to [0, 1] so no single raw metric dominates.
 
-LOW-OI HANDLING (explicit):
-  Contracts with open_interest < 50 are EXCLUDED before scoring.
-  Very low OI (1–49) inflates vol_oi_ratio artificially: OI=1 with volume=100
-  gives a ratio of 100×, which dominates after normalization even with VOL_OI_CAP.
-  These contracts have negligible established market participation and produce
-  false "unusual" signals. They are dropped unconditionally.
-  To override, lower MIN_OI in unusual_engine.py.
-
-VOL/OI CAP:
-  vol_oi_ratio is capped at VOL_OI_CAP (50×) before global normalization.
-  This prevents a single extreme ratio from compressing all other contracts.
-
 PRE-FILTERS (all must pass to enter scoring):
-  open_interest  >= MIN_OI          (default 1 — zero OI excluded)
-  volume         >= MIN_VOLUME      (default 10)
-  vol_notional   >= MIN_VOL_NOTIONAL (default $5k)
-  spread_pct     <= MAX_SPREAD_PCT  (default 80% of mid)
-  dte             in [MIN_DTE, MAX_DTE] (default 2–90 days)
-  |delta|        >= MIN_DELTA_ABS   (default 0.05, only if delta present)
+  open_interest  >= MIN_OI           (default 100)
+  volume         >= MIN_VOLUME       (default 250)
+  vol_notional   >= MIN_VOL_NOTIONAL (default $100k)
+  spread_pct     <= MAX_SPREAD_PCT   (default 20% of mid)
+  dte             in [MIN_DTE, MAX_DTE] (default 3–45 days)
+  |delta|         in [MIN_DELTA_ABS, MAX_DELTA_ABS] (default 0.20–0.70)
 
 WEIGHTS (sum to 1.0):
   vol_notional_norm  0.30   Dollar flow today (primary signal)
@@ -33,7 +21,21 @@ WEIGHTS (sum to 1.0):
   global_pct_rank    0.10   Unusual vs entire chain
   atm_proximity      0.05   Slight preference for near-ATM
 
-REASON TAGS (descriptive, not mutually exclusive):
+CONTRACT CLASSIFICATION:
+  actionable   — tradeable delta, tight spread, meaningful premium, near-term
+  watchlist    — interesting but not immediately tradeable
+  lottery      — far OTM, weak delta, speculative
+  hedge_like   — large put position with low vol/OI (institutional hedge)
+
+CONVICTION SCORING (conviction_score 0–100, conviction_grade A/B/C/Ignore):
+  liquidity_quality  0.15   Volume absolute level
+  spread_quality     0.20   Spread tightness
+  delta_usefulness   0.20   Delta in 0.30–0.60 sweet spot
+  oi_quality         0.20   Vol/OI participation ratio
+  premium_size       0.15   Premium notional size
+  near_term_rel      0.10   DTE proximity (7–21 days ideal)
+
+REASON TAGS:
   High Vol/OI          vol_oi_ratio > 5× or top 5% per expiry
   Big Premium          vol_notional > $500k or oi_notional > $5M
   Expiry Concentration expiry_pct_rank > 0.93
@@ -56,35 +58,47 @@ logger = logging.getLogger(__name__)
 
 # ── Weights ──────────────────────────────────────────────────────────────────
 WEIGHTS = {
-    "vol_notional_norm": 0.30,   # dollar flow is the primary signal
-    "vol_oi_norm":       0.25,   # aggression (zero-OI excluded + capped)
-    "oi_notional_norm":  0.15,   # established position
-    "expiry_pct_rank":   0.15,   # concentration within expiry
-    "global_pct_rank":   0.10,   # global percentile
-    "atm_proximity":     0.05,   # slight preference for near-ATM
+    "vol_notional_norm": 0.30,
+    "vol_oi_norm":       0.25,
+    "oi_notional_norm":  0.15,
+    "expiry_pct_rank":   0.15,
+    "global_pct_rank":   0.10,
+    "atm_proximity":     0.05,
 }
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
 # ── Pre-filter thresholds ─────────────────────────────────────────────────────
-MIN_OI            = 50         # open_interest >= 50; OI=1-5 inflates vol/OI ratio artificially
-MIN_VOLUME        = 10         # at least 10 contracts traded today
-MIN_VOL_NOTIONAL  = 5_000.0   # at least $5k in premium-volume flow
-MAX_SPREAD_PCT    = 0.80       # (ask - bid) / mid <= 80%
-MIN_DTE           = 2          # exclude 0DTE and next-day expirations
-MAX_DTE           = 90         # exclude LEAPS and far-dated contracts
-MIN_DELTA_ABS     = 0.05       # exclude deep-OTM junk (when delta present)
+MIN_OI            = 100        # open_interest >= 100
+MIN_VOLUME        = 250        # at least 250 contracts traded today
+MIN_VOL_NOTIONAL  = 100_000.0  # at least $100k in premium-volume flow
+MAX_SPREAD_PCT    = 0.20       # (ask - bid) / mid <= 20%
+MIN_DTE           = 3          # exclude 0-2 DTE noise
+MAX_DTE           = 45         # exclude LEAPS and far-dated contracts
+MIN_DELTA_ABS     = 0.20       # exclude deep-OTM
+MAX_DELTA_ABS     = 0.70       # exclude deep-ITM (delta > 0.70 is not options flow)
 
 # ── Scoring constants ─────────────────────────────────────────────────────────
-VOL_OI_CAP        = 50.0       # cap vol/OI before normalization
-VOL_OI_HIGH       = 5.0        # "High Vol/OI" tag threshold
-BIG_PREMIUM_VOL   = 500_000    # $500k vol_notional → "Big Premium"
-BIG_PREMIUM_OI    = 5_000_000  # $5M oi_notional → "Big Premium"
-EXPIRY_CONC_RANK  = 0.93       # top 7% within expiry
-CALL_DOM_RANK     = 0.90       # top 10% globally
+VOL_OI_CAP        = 50.0
+VOL_OI_HIGH       = 5.0
+BIG_PREMIUM_VOL   = 500_000
+BIG_PREMIUM_OI    = 5_000_000
+EXPIRY_CONC_RANK  = 0.93
+CALL_DOM_RANK     = 0.90
 PUT_HEDGE_OI      = 5_000_000
 PUT_HEDGE_VOL_OI  = 2.0
-ATM_PCT           = 0.02       # within 2% of spot
-OTM_PCT           = 0.10       # more than 10% OTM
+ATM_PCT           = 0.02
+OTM_PCT           = 0.10
+
+# ── Conviction scoring weights ────────────────────────────────────────────────
+_CONVICTION_W = {
+    "liquidity": 0.15,
+    "spread":    0.20,
+    "delta":     0.20,
+    "oi":        0.20,
+    "premium":   0.15,
+    "relevance": 0.10,
+}
+assert abs(sum(_CONVICTION_W.values()) - 1.0) < 1e-9
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,35 +121,22 @@ def _spread_pct(contract: OptionContract) -> float:
 
 
 def _passes_prefilter(contract: OptionContract) -> bool:
-    """
-    Return True only if the contract meets all quality gates.
-    Contracts that fail are excluded from scoring entirely.
-    """
-    # Zero-OI exclusion: vol_oi_ratio with OI=0 is just raw volume — unreliable.
+    """Return True only if the contract meets all quality gates."""
     if contract.open_interest < MIN_OI:
         return False
-
-    # Minimum trading activity
     if contract.volume < MIN_VOLUME:
         return False
-
-    # Minimum dollar flow: removes penny options with tiny notional
     if contract.vol_notional < MIN_VOL_NOTIONAL:
         return False
-
-    # Spread quality: wide spreads indicate illiquid / stale quotes
     if _spread_pct(contract) > MAX_SPREAD_PCT:
         return False
-
-    # Expiry window: exclude 0DTE noise and far-dated LEAPS
     dte = _dte(contract.expiration)
     if not (MIN_DTE <= dte <= MAX_DTE):
         return False
-
-    # Delta filter (only when available): exclude deep-OTM lottery tickets
-    if contract.delta is not None and abs(contract.delta) < MIN_DELTA_ABS:
-        return False
-
+    if contract.delta is not None:
+        d = abs(contract.delta)
+        if d < MIN_DELTA_ABS or d > MAX_DELTA_ABS:
+            return False
     return True
 
 
@@ -155,12 +156,125 @@ def _minmax_norm(arr: np.ndarray) -> np.ndarray:
 
 
 def _atm_score(moneyness: float) -> float:
-    """
-    Return [0, 1] based on proximity to ATM.
-    1.0 = exactly ATM, decays to ~0 at >20% OTM/ITM.
-    """
+    """Return [0, 1] based on proximity to ATM. 1.0 = exactly ATM."""
     distance = abs(moneyness - 1.0)
     return math.exp(-((distance / 0.07) ** 2))
+
+
+# ── Contract classification ───────────────────────────────────────────────────
+
+def classify_contract(
+    contract: OptionContract,
+    moneyness: float,
+    dte: int,
+) -> str:
+    """
+    Classify each contract for tradability.
+
+    actionable   — good delta, tight spread, meaningful premium, near-term
+    watchlist    — worth monitoring but not immediately tradeable
+    lottery      — far OTM, speculative
+    hedge_like   — institutional put protection (large OI, low vol/OI)
+    """
+    delta_abs = abs(contract.delta) if contract.delta is not None else 0.5
+    spread    = _spread_pct(contract)
+    dist_pct  = abs(moneyness - 1.0)
+
+    # Institutional hedge: large put OI, low turnover
+    if (contract.option_type == "put"
+            and contract.oi_notional >= PUT_HEDGE_OI
+            and contract.vol_oi_ratio < PUT_HEDGE_VOL_OI):
+        return "hedge_like"
+
+    # Lottery: far OTM with weak delta
+    if dist_pct >= OTM_PCT and delta_abs < 0.25:
+        return "lottery"
+
+    # Actionable: delta in sweet spot, tight spread, real premium, near expiry
+    if (0.25 <= delta_abs <= 0.65
+            and spread <= 0.12
+            and contract.vol_notional >= 150_000
+            and dte <= 30):
+        return "actionable"
+
+    return "watchlist"
+
+
+# ── Conviction scoring ────────────────────────────────────────────────────────
+
+def score_conviction(
+    contract: OptionContract,
+    dte: int,
+) -> tuple[float, str]:
+    """
+    Compute conviction_score [0–100] and grade (A / B / C / Ignore).
+
+    Sub-scores (each 0–1):
+      liquidity  — volume absolute level (scaled to 2000 contracts)
+      spread     — spread quality (0% = 1.0, MAX_SPREAD_PCT = 0.0)
+      delta      — 0.30–0.60 ideal range
+      oi         — vol/OI participation (capped at 20x)
+      premium    — premium notional (scaled to $500k)
+      relevance  — DTE proximity (7–21 days = ideal)
+    """
+    # Liquidity
+    liquidity = min(contract.volume / 2_000, 1.0)
+
+    # Spread quality
+    spread = _spread_pct(contract)
+    spread_q = max(0.0, 1.0 - spread / MAX_SPREAD_PCT)
+
+    # Delta usefulness
+    if contract.delta is not None:
+        d = abs(contract.delta)
+        if 0.30 <= d <= 0.60:
+            delta_q = 1.0
+        elif 0.20 <= d < 0.30 or 0.60 < d <= 0.70:
+            delta_q = 0.6
+        else:
+            delta_q = 0.2
+    else:
+        delta_q = 0.5
+
+    # OI participation
+    vol_oi = min(contract.vol_oi_ratio, 20.0)
+    oi_q = min(vol_oi / 10.0, 1.0)
+
+    # Premium size
+    premium_q = min(contract.vol_notional / 500_000, 1.0)
+
+    # Near-term relevance
+    if 7 <= dte <= 21:
+        rel_q = 1.0
+    elif 22 <= dte <= 30:
+        rel_q = 0.8
+    elif 3 <= dte < 7:
+        rel_q = 0.6
+    elif 31 <= dte <= 45:
+        rel_q = 0.4
+    else:
+        rel_q = 0.1
+
+    raw = (
+        _CONVICTION_W["liquidity"] * liquidity  +
+        _CONVICTION_W["spread"]    * spread_q   +
+        _CONVICTION_W["delta"]     * delta_q    +
+        _CONVICTION_W["oi"]        * oi_q       +
+        _CONVICTION_W["premium"]   * premium_q  +
+        _CONVICTION_W["relevance"] * rel_q
+    )
+    score = round(raw * 100, 1)
+
+    if score >= 70:
+        grade = "A"
+    elif score >= 50:
+        grade = "B"
+    elif score >= 30:
+        grade = "C"
+    else:
+        grade = "Ignore"
+
+    return score, grade
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -171,7 +285,8 @@ def score_contracts(
 ) -> List[OptionContract]:
     """
     Pre-filter contracts, then annotate survivors with unusual_score,
-    unusual_rank, and reason_tags. Returns survivors sorted by score desc.
+    unusual_rank, reason_tags, conviction_score, conviction_grade,
+    and contract_class. Returns survivors sorted by score desc.
 
     Contracts that fail pre-filtering are returned at the end with
     unusual_score=0, unusual_rank=0, reason_tags=[] so the full chain
@@ -180,45 +295,33 @@ def score_contracts(
     if not contracts:
         return contracts
 
-    # Partition: eligible for scoring vs. filtered out
-    eligible = [c for c in contracts if _passes_prefilter(c)]
+    eligible    = [c for c in contracts if _passes_prefilter(c)]
     filtered_out = [c for c in contracts if not _passes_prefilter(c)]
 
-    # Use INFO so these lines appear in Railway logs without debug mode
     logger.info(
         "unusual_engine [%s]: MIN_OI=%d  contracts_in=%d  eligible=%d  dropped=%d",
         contracts[0].ticker if contracts else "?",
         MIN_OI, len(contracts), len(eligible), len(filtered_out),
     )
-    low_oi_dropped = [c for c in filtered_out if c.open_interest < MIN_OI]
-    logger.info(
-        "unusual_engine [%s]: low-OI dropped=%d  (OI values: %s)",
-        contracts[0].ticker if contracts else "?",
-        len(low_oi_dropped),
-        sorted(set(c.open_interest for c in low_oi_dropped))[:10],
-    )
 
     if not eligible:
         logger.warning(
-            "unusual_engine [%s]: no eligible contracts after pre-filter — returning unsorted chain",
+            "unusual_engine [%s]: no eligible contracts after pre-filter",
             contracts[0].ticker if contracts else "?",
         )
-        return contracts  # nothing to score; return as-is
+        return contracts
 
     # Per-expiry groups for relative ranking
     expiry_groups: dict[str, list[int]] = {}
     for i, c in enumerate(eligible):
         expiry_groups.setdefault(c.expiration, []).append(i)
 
-    # Raw signal arrays — vol/OI capped to prevent zero-OI (or any extreme)
-    # from collapsing the normalized range for the rest of the chain.
     vol_oi_arr  = np.array(
         [min(c.vol_oi_ratio, VOL_OI_CAP) for c in eligible], dtype=float
     )
-    vol_not_arr = np.array([c.vol_notional  for c in eligible], dtype=float)
-    oi_not_arr  = np.array([c.oi_notional   for c in eligible], dtype=float)
+    vol_not_arr = np.array([c.vol_notional for c in eligible], dtype=float)
+    oi_not_arr  = np.array([c.oi_notional  for c in eligible], dtype=float)
 
-    # Global min-max normalization
     vol_oi_norm  = _minmax_norm(vol_oi_arr)
     vol_not_norm = _minmax_norm(vol_not_arr)
     oi_not_norm  = _minmax_norm(oi_not_arr)
@@ -226,35 +329,26 @@ def score_contracts(
     scores: list[float] = []
 
     for i, contract in enumerate(eligible):
-        # ── Signal 1: vol notional (dollar flow) ─────────────────────────────
         s_vol_not = vol_not_norm[i]
+        s_vol_oi  = vol_oi_norm[i]
+        s_oi_not  = oi_not_norm[i]
 
-        # ── Signal 2: vol/OI ratio (aggression, capped) ───────────────────────
-        s_vol_oi = vol_oi_norm[i]
-
-        # ── Signal 3: OI notional (established interest) ──────────────────────
-        s_oi_not = oi_not_norm[i]
-
-        # ── Signal 4: percentile rank within same expiry ──────────────────────
-        expiry_idxs = expiry_groups[contract.expiration]
+        expiry_idxs  = expiry_groups[contract.expiration]
         expiry_vol_oi = vol_oi_arr[expiry_idxs]
         s_expiry = _percentile_rank(vol_oi_arr[i], expiry_vol_oi)
-
-        # ── Signal 5: global percentile rank ──────────────────────────────────
         s_global = _percentile_rank(vol_oi_arr[i], vol_oi_arr)
 
-        # ── Signal 6: ATM proximity ───────────────────────────────────────────
         moneyness = (contract.strike / underlying_price) if underlying_price > 0 else 1.0
         contract.moneyness = round(moneyness, 4)
         contract.underlying_price = underlying_price
         s_atm = _atm_score(moneyness)
 
         raw = (
-            WEIGHTS["vol_notional_norm"] * s_vol_not  +
-            WEIGHTS["vol_oi_norm"]       * s_vol_oi   +
-            WEIGHTS["oi_notional_norm"]  * s_oi_not   +
-            WEIGHTS["expiry_pct_rank"]   * s_expiry   +
-            WEIGHTS["global_pct_rank"]   * s_global   +
+            WEIGHTS["vol_notional_norm"] * s_vol_not +
+            WEIGHTS["vol_oi_norm"]       * s_vol_oi  +
+            WEIGHTS["oi_notional_norm"]  * s_oi_not  +
+            WEIGHTS["expiry_pct_rank"]   * s_expiry  +
+            WEIGHTS["global_pct_rank"]   * s_global  +
             WEIGHTS["atm_proximity"]     * s_atm
         )
         scores.append(raw)
@@ -293,12 +387,16 @@ def score_contracts(
 
         contract.reason_tags = tags
 
+        # ── Conviction + classification ───────────────────────────────────────
+        dte = _dte(contract.expiration)
+        contract.conviction_score, contract.conviction_grade = score_conviction(contract, dte)
+        contract.contract_class = classify_contract(contract, moneyness, dte)
+
     # Normalize eligible scores to 0–100 relative to their own max
     max_score = max(scores) if scores else 1.0
     for i, contract in enumerate(eligible):
         contract.unusual_score = round((scores[i] / max_score) * 100, 2)
 
-    # Rank (1 = highest) across eligible only
     ranked = sorted(range(len(eligible)), key=lambda i: eligible[i].unusual_score, reverse=True)
     for rank, idx in enumerate(ranked, start=1):
         eligible[idx].unusual_rank = rank
@@ -309,5 +407,4 @@ def score_contracts(
         contracts[0].ticker if contracts else "?",
         [c.unusual_score for c in scored_eligible[:5]],
     )
-    # Return eligible sorted by score, then unscored contracts appended
     return scored_eligible + filtered_out

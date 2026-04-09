@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     # ── Scanner ───────────────────────────────────────────────────────────────
     scan_tickers: str = "SPY,QQQ,AAPL,TSLA,NVDA,AMZN,MSFT,META,AMD,GOOGL"
     scan_interval_minutes: int = 15      # how often the scheduler fires
-    scan_min_score: float = 60.0         # minimum unusual_score (0–100)
-    scan_min_premium: float = 50_000.0   # minimum vol_notional in USD
-    scan_min_volume: int = 100           # minimum contract volume
+    scan_min_score: float = 60.0          # minimum unusual_score (0–100)
+    scan_min_premium: float = 100_000.0  # minimum vol_notional in USD
+    scan_min_volume: int = 250           # minimum contract volume
     scan_top_n: int = 5                  # top N contracts kept per ticker
 
     # ── Telegram ──────────────────────────────────────────────────────────────

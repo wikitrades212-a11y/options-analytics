@@ -32,6 +32,11 @@ class OptionContract(BaseModel):
     unusual_rank: int = 0
     reason_tags: List[str] = Field(default_factory=list)
 
+    # Conviction / tradeable-flow scoring (populated by engine)
+    conviction_score: float = 0.0
+    conviction_grade: str = "Ignore"    # A / B / C / Ignore
+    contract_class: str = "watchlist"   # actionable / watchlist / lottery / hedge_like
+
     # Greeks (if available)
     delta: Optional[float] = None
     gamma: Optional[float] = None
