@@ -197,9 +197,9 @@ export default function InputPanel({
             placeholder="auto-filled" />
         </div>
 
-        {/* Target price */}
+        {/* Expected price */}
         <div className="space-y-1.5">
-          <label className="text-xs text-text-muted font-medium">Target Price</label>
+          <label className="text-xs text-text-muted font-medium">Expected Price</label>
           <div className="relative">
             <input type="number" step="0.01" className="input w-full font-mono pr-16"
               value={params.target_price || ""}
