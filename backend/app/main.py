@@ -13,8 +13,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
-from app.routers import options_router, calculator_router
+from app.routers import options_router, calculator_router, scanner_router
 from app.providers import provider
+from app.services.scanner_service import start_scheduler, stop_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +41,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _provider_ready = False
         logger.warning(f"Provider warmup error (non-fatal): {exc}")
+
+    start_scheduler()
     yield
+
+    stop_scheduler()
     logger.info("Shutting down.")
 
 
@@ -69,6 +74,7 @@ app.add_middleware(
 
 app.include_router(options_router)
 app.include_router(calculator_router)
+app.include_router(scanner_router)
 
 
 @app.get("/health", tags=["meta"])
