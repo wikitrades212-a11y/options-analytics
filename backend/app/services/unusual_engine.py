@@ -184,12 +184,25 @@ def score_contracts(
     eligible = [c for c in contracts if _passes_prefilter(c)]
     filtered_out = [c for c in contracts if not _passes_prefilter(c)]
 
-    logger.debug(
-        "unusual_engine: %d contracts in, %d eligible after pre-filter, %d dropped",
-        len(contracts), len(eligible), len(filtered_out),
+    # Use INFO so these lines appear in Railway logs without debug mode
+    logger.info(
+        "unusual_engine [%s]: MIN_OI=%d  contracts_in=%d  eligible=%d  dropped=%d",
+        contracts[0].ticker if contracts else "?",
+        MIN_OI, len(contracts), len(eligible), len(filtered_out),
+    )
+    low_oi_dropped = [c for c in filtered_out if c.open_interest < MIN_OI]
+    logger.info(
+        "unusual_engine [%s]: low-OI dropped=%d  (OI values: %s)",
+        contracts[0].ticker if contracts else "?",
+        len(low_oi_dropped),
+        sorted(set(c.open_interest for c in low_oi_dropped))[:10],
     )
 
     if not eligible:
+        logger.warning(
+            "unusual_engine [%s]: no eligible contracts after pre-filter — returning unsorted chain",
+            contracts[0].ticker if contracts else "?",
+        )
         return contracts  # nothing to score; return as-is
 
     # Per-expiry groups for relative ranking
@@ -290,8 +303,11 @@ def score_contracts(
     for rank, idx in enumerate(ranked, start=1):
         eligible[idx].unusual_rank = rank
 
-    # Return eligible sorted by score, then unscored contracts appended
-    return (
-        sorted(eligible, key=lambda c: c.unusual_score, reverse=True)
-        + filtered_out
+    scored_eligible = sorted(eligible, key=lambda c: c.unusual_score, reverse=True)
+    logger.info(
+        "unusual_engine [%s]: scoring done — top scores: %s",
+        contracts[0].ticker if contracts else "?",
+        [c.unusual_score for c in scored_eligible[:5]],
     )
+    # Return eligible sorted by score, then unscored contracts appended
+    return scored_eligible + filtered_out
