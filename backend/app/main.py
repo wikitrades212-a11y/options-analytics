@@ -17,6 +17,7 @@ from app.routers import options_router, calculator_router, scanner_router
 from app.providers import provider
 from app.services.scanner_service import start_scheduler, stop_scheduler
 from app.services.futures_service import start_futures_scheduler, stop_futures_scheduler
+from app.services.social_service import start_social_scheduler, stop_social_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +46,12 @@ async def lifespan(app: FastAPI):
 
     start_scheduler()
     start_futures_scheduler()
+    start_social_scheduler()
     yield
 
     stop_scheduler()
     stop_futures_scheduler()
+    stop_social_scheduler()
     logger.info("Shutting down.")
 
 

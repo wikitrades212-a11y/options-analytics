@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     telegram_enabled: bool = True
 
+    # ── Social automation ─────────────────────────────────────────────────────
+    social_enabled: bool = False                  # master switch
+    social_delay_minutes: int = 20                # delay before public post [15–60]
+    social_live_update_enabled: bool = True       # allow intraday live updates
+    social_platforms: str = "log"                 # comma-separated: log, webhook
+    social_webhook_url: str = ""                  # generic webhook URL (optional)
+    social_max_names_per_post: int = 3            # max tickers per post
+    social_premarket_enabled: bool = True         # 8:30 AM premarket summary
+    social_eod_enabled: bool = True               # 4:30 PM end-of-day recap
+    social_sunday_enabled: bool = True            # Sunday futures post
+
     class Config:
         env_file = os.path.join(os.path.dirname(__file__), "..", ".env")
         case_sensitive = False

@@ -185,6 +185,10 @@ async def run_futures_gap_report() -> None:
     await _post(msg)
     logger.info("Futures gap report sent.")
 
+    # Social automation — additive, does not affect Telegram flow
+    from app.services.social_service import queue_futures_result  # noqa: PLC0415
+    queue_futures_result(es, nq)
+
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 

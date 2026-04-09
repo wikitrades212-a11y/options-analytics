@@ -279,6 +279,7 @@ def _next_scan_dt() -> datetime:
 
 async def _scheduler_loop() -> None:
     from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
+    from app.services.social_service import PostType, queue_scan_result  # noqa: PLC0415
 
     logger.info("Scanner scheduler started — weekdays 8:30 AM + hourly 9:30–4:30 PM ET")
 
@@ -305,6 +306,16 @@ async def _scheduler_loop() -> None:
                 f"across {len(result['tickers_scanned'])} tickers"
             )
             await send_scan_summary(result)
+
+            # Social automation — additive, does not affect Telegram flow
+            if next_dt.hour == 8:
+                social_type = PostType.PREMARKET
+            elif next_dt.hour == 16:
+                social_type = PostType.EOD_RECAP
+            else:
+                social_type = PostType.LIVE_UPDATE
+            queue_scan_result(result, social_type)
+
         except asyncio.CancelledError:
             raise
         except Exception as exc:
