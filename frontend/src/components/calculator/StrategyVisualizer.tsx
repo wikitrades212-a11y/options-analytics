@@ -6,69 +6,23 @@ import {
   ReferenceLine, ResponsiveContainer,
 } from "recharts";
 import clsx from "clsx";
-import { ChevronDown, ChevronUp, TrendingUp, Activity } from "lucide-react";
+import { ChevronDown, ChevronUp, Activity } from "lucide-react";
 import { bsPrice, dteToYears, RISK_FREE_RATE } from "@/lib/blackScholes";
 
 // ── Strategy types ────────────────────────────────────────────────────────────
 
-type StrategyType =
-  | "long_call"
-  | "long_put"
-  | "call_debit_spread"
-  | "put_debit_spread"
-  | "call_credit_spread"
-  | "put_credit_spread"
-  | "covered_call"
-  | "cash_secured_put";
-
-const STRATEGY_LABELS: Record<StrategyType, string> = {
-  long_call:           "Long Call",
-  long_put:            "Long Put",
-  call_debit_spread:   "Call Debit Spread",
-  put_debit_spread:    "Put Debit Spread",
-  call_credit_spread:  "Call Credit Spread",
-  put_credit_spread:   "Put Credit Spread",
-  covered_call:        "Covered Call",
-  cash_secured_put:    "Cash-Secured Put",
-};
-
-type LegStructure = "single" | "spread" | "covered";
-
-const STRATEGY_LEGS: Record<StrategyType, LegStructure> = {
-  long_call:           "single",
-  long_put:            "single",
-  call_debit_spread:   "spread",
-  put_debit_spread:    "spread",
-  call_credit_spread:  "spread",
-  put_credit_spread:   "spread",
-  covered_call:        "covered",
-  cash_secured_put:    "single",
-};
+type StrategyType = "long_call" | "long_put";
 
 // ── Strategy params ───────────────────────────────────────────────────────────
 
 interface StrategyParams {
-  strike: number;
+  strike:  number;
   premium: number;
-  longStrike: number;
-  longPremium: number;
-  shortStrike: number;
-  shortPremium: number;
-  stockEntry: number;
 }
 
-const DEFAULT_PARAMS: StrategyParams = {
-  strike: 0, premium: 0,
-  longStrike: 0, longPremium: 0,
-  shortStrike: 0, shortPremium: 0,
-  stockEntry: 0,
-};
+const DEFAULT_PARAMS: StrategyParams = { strike: 0, premium: 0 };
 
 // ── Leg Greeks / IV ───────────────────────────────────────────────────────────
-// iv = implied volatility in percent (e.g. 45 for 45%)
-// When iv > 0: Black-Scholes pricing is used (more accurate)
-// When iv = 0 but delta set: Taylor delta/gamma approximation used
-// When both zero: live estimate not available
 
 interface LegGreeks {
   delta: number;
@@ -80,101 +34,38 @@ const DEFAULT_GREEKS: LegGreeks = { delta: 0, gamma: 0, iv: 0 };
 
 type EstimateMode = "bs" | "taylor" | "none";
 
-function getEstimateMode(
-  legs: LegStructure,
-  gA: LegGreeks,
-  _gB: LegGreeks,
-): EstimateMode {
-  if (gA.iv > 0) return "bs";
-  if (legs === "single" || legs === "covered") return gA.delta !== 0 ? "taylor" : "none";
-  return gA.delta !== 0 || _gB.delta !== 0 ? "taylor" : "none";
+function getEstimateMode(g: LegGreeks): EstimateMode {
+  if (g.iv > 0) return "bs";
+  if (g.delta !== 0) return "taylor";
+  return "none";
 }
 
 // ── Payoff at expiration (per-share, exact) ────────────────────────────────────
 
 function payoffAtExpiry(strategy: StrategyType, p: StrategyParams, S: number): number {
-  switch (strategy) {
-    case "long_call":      return Math.max(S - p.strike, 0) - p.premium;
-    case "long_put":       return Math.max(p.strike - S, 0) - p.premium;
-    case "call_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return Math.max(S - p.longStrike, 0) - Math.max(S - p.shortStrike, 0) - nd;
-    }
-    case "put_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return Math.max(p.longStrike - S, 0) - Math.max(p.shortStrike - S, 0) - nd;
-    }
-    case "call_credit_spread": {
-      const nc = p.shortPremium - p.longPremium;
-      return nc - (Math.max(S - p.shortStrike, 0) - Math.max(S - p.longStrike, 0));
-    }
-    case "put_credit_spread": {
-      const nc = p.shortPremium - p.longPremium;
-      return nc - (Math.max(p.shortStrike - S, 0) - Math.max(p.longStrike - S, 0));
-    }
-    case "covered_call":
-      return (S - p.stockEntry) + (p.premium - Math.max(S - p.strike, 0));
-    case "cash_secured_put":
-      return p.premium - Math.max(p.strike - S, 0);
-    default: return 0;
-  }
+  if (strategy === "long_call") return Math.max(S - p.strike, 0) - p.premium;
+  if (strategy === "long_put")  return Math.max(p.strike - S, 0) - p.premium;
+  return 0;
 }
 
 // ── Black-Scholes live estimate (per-share) ───────────────────────────────────
-// Uses option's IV and DTE to price each leg at stock price S.
-// gA = Greeks for longStrike/longPremium or single-leg; gB = shortStrike/shortPremium
 
 function liveEstimateBS(
   strategy: StrategyType,
   p: StrategyParams,
-  gA: LegGreeks,
-  gB: LegGreeks,
+  g: LegGreeks,
   S: number,
-  T: number, // years to expiration
+  T: number,
 ): number {
+  const sigma = g.iv / 100;
   const r = RISK_FREE_RATE;
-
-  function bsVal(K: number, ivPct: number, type: "call" | "put"): number {
-    const sigma = ivPct / 100;
-    if (sigma <= 0 || T <= 0) {
-      return type === "call" ? Math.max(S - K, 0) : Math.max(K - S, 0);
-    }
-    return bsPrice({ S, K, T, r, sigma, type }).price;
+  function bsVal(type: "call" | "put"): number {
+    if (sigma <= 0 || T <= 0) return type === "call" ? Math.max(S - p.strike, 0) : Math.max(p.strike - S, 0);
+    return bsPrice({ S, K: p.strike, T, r, sigma, type }).price;
   }
-
-  const ivB = gB.iv > 0 ? gB.iv : gA.iv; // fall back to gA.iv for second leg if not set
-
-  switch (strategy) {
-    case "long_call":
-      return bsVal(p.strike, gA.iv, "call") - p.premium;
-    case "long_put":
-      return bsVal(p.strike, gA.iv, "put") - p.premium;
-    case "cash_secured_put":
-      return p.premium - bsVal(p.strike, gA.iv, "put");
-    case "call_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return bsVal(p.longStrike, gA.iv, "call") - bsVal(p.shortStrike, ivB, "call") - nd;
-    }
-    case "put_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return bsVal(p.longStrike, gA.iv, "put") - bsVal(p.shortStrike, ivB, "put") - nd;
-    }
-    case "call_credit_spread": {
-      // shortStrike/shortPremium = SOLD (gA); longStrike/longPremium = HEDGE (gB)
-      const nc = p.shortPremium - p.longPremium;
-      return nc - (bsVal(p.shortStrike, gA.iv, "call") - bsVal(p.longStrike, ivB, "call"));
-    }
-    case "put_credit_spread": {
-      const nc = p.shortPremium - p.longPremium;
-      return nc - (bsVal(p.shortStrike, gA.iv, "put") - bsVal(p.longStrike, ivB, "put"));
-    }
-    case "covered_call": {
-      const stockPnL = S - p.stockEntry;
-      const callPnL  = p.premium - bsVal(p.strike, gA.iv, "call");
-      return stockPnL + callPnL;
-    }
-    default: return 0;
-  }
+  if (strategy === "long_call") return bsVal("call") - p.premium;
+  if (strategy === "long_put")  return bsVal("put")  - p.premium;
+  return 0;
 }
 
 // ── Taylor delta/gamma approximation (fallback, per-share) ───────────────────
@@ -182,39 +73,15 @@ function liveEstimateBS(
 function liveEstimateTaylor(
   strategy: StrategyType,
   p: StrategyParams,
-  gA: LegGreeks,
-  gB: LegGreeks,
+  g: LegGreeks,
   S: number,
   S0: number,
 ): number {
   const dS = S - S0;
-  const optVal = (prem: number, d: number, g: number) =>
-    Math.max(prem + d * dS + 0.5 * g * dS * dS, 0);
-
-  switch (strategy) {
-    case "long_call":
-    case "long_put":
-      return optVal(p.premium, gA.delta, gA.gamma) - p.premium;
-    case "cash_secured_put":
-      return p.premium - optVal(p.premium, gA.delta, gA.gamma);
-    case "call_debit_spread":
-    case "put_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return optVal(p.longPremium, gA.delta, gA.gamma) - optVal(p.shortPremium, gB.delta, gB.gamma) - nd;
-    }
-    case "call_credit_spread":
-    case "put_credit_spread": {
-      // shortPremium = SOLD (gA); longPremium = HEDGE (gB) — mirrors StrategyParams convention
-      const nc = p.shortPremium - p.longPremium;
-      return nc - (optVal(p.shortPremium, gA.delta, gA.gamma) - optVal(p.longPremium, gB.delta, gB.gamma));
-    }
-    case "covered_call": {
-      const stockPnL = S - p.stockEntry;
-      const callPnL  = p.premium - optVal(p.premium, gA.delta, gA.gamma);
-      return stockPnL + callPnL;
-    }
-    default: return 0;
-  }
+  const optVal = Math.max(p.premium + g.delta * dS + 0.5 * g.gamma * dS * dS, 0);
+  if (strategy === "long_call") return optVal - p.premium;
+  if (strategy === "long_put")  return optVal - p.premium;
+  return 0;
 }
 
 // ── Analytic summary (expiry mode) ────────────────────────────────────────────
@@ -227,54 +94,19 @@ interface Summary {
 }
 
 function computeSummary(strategy: StrategyType, p: StrategyParams): Summary {
-  switch (strategy) {
-    case "long_call":
-      return { maxProfit: null, maxLoss: -p.premium, breakevens: [p.strike + p.premium], cost: p.premium };
-    case "long_put":
-      return { maxProfit: p.strike - p.premium, maxLoss: -p.premium, breakevens: [p.strike - p.premium], cost: p.premium };
-    case "call_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return { maxProfit: p.shortStrike - p.longStrike - nd, maxLoss: -nd, breakevens: [p.longStrike + nd], cost: nd };
-    }
-    case "put_debit_spread": {
-      const nd = p.longPremium - p.shortPremium;
-      return { maxProfit: p.longStrike - p.shortStrike - nd, maxLoss: -nd, breakevens: [p.longStrike - nd], cost: nd };
-    }
-    case "call_credit_spread": {
-      const nc = p.shortPremium - p.longPremium;
-      return { maxProfit: nc, maxLoss: -(p.longStrike - p.shortStrike - nc), breakevens: [p.shortStrike + nc], cost: -nc };
-    }
-    case "put_credit_spread": {
-      const nc = p.shortPremium - p.longPremium;
-      return { maxProfit: nc, maxLoss: -(p.shortStrike - p.longStrike - nc), breakevens: [p.shortStrike - nc], cost: -nc };
-    }
-    case "covered_call": {
-      const ec = p.stockEntry - p.premium;
-      return { maxProfit: p.strike - p.stockEntry + p.premium, maxLoss: -ec, breakevens: [ec], cost: ec };
-    }
-    case "cash_secured_put":
-      return { maxProfit: p.premium, maxLoss: -(p.strike - p.premium), breakevens: [p.strike - p.premium], cost: -p.premium };
-    default:
-      return { maxProfit: 0, maxLoss: 0, breakevens: [], cost: 0 };
+  if (strategy === "long_call") {
+    return { maxProfit: null, maxLoss: -p.premium, breakevens: [p.strike + p.premium], cost: p.premium };
   }
+  return { maxProfit: p.strike - p.premium, maxLoss: -p.premium, breakevens: [p.strike - p.premium], cost: p.premium };
 }
 
 // ── Chart range ───────────────────────────────────────────────────────────────
 
-function chartRange(strategy: StrategyType, p: StrategyParams, cp: number) {
-  const legs = STRATEGY_LEGS[strategy];
-  const strikes: number[] = [];
-  if (legs === "single" || legs === "covered") {
-    if (p.strike > 0) strikes.push(p.strike);
-  } else {
-    if (p.longStrike > 0)  strikes.push(p.longStrike);
-    if (p.shortStrike > 0) strikes.push(p.shortStrike);
-  }
-  if (p.stockEntry > 0) strikes.push(p.stockEntry);
-  if (cp > 0)           strikes.push(cp);
-  const arr = strikes.length ? strikes : [cp || 100];
-  const lo  = Math.min(...arr);
-  const hi  = Math.max(...arr);
+function chartRange(p: StrategyParams, cp: number) {
+  const refs = [cp || 100];
+  if (p.strike > 0) refs.push(p.strike);
+  const lo  = Math.min(...refs);
+  const hi  = Math.max(...refs);
   const ctr = (lo + hi) / 2;
   const span = Math.max((hi - lo) * 1.5, ctr * 0.4, 20);
   return { lo: Math.max(ctr - span, 0.01), hi: ctr + span };
@@ -360,51 +192,44 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
   const [params, setParams]       = useState<StrategyParams>({ ...DEFAULT_PARAMS });
   const [expectedPrice, setExpectedPrice] = useState(targetPrice || 0);
   const [viewMode, setViewMode]   = useState<"expiry" | "live">("expiry");
-  const [greeksA, setGreeksA]     = useState<LegGreeks>({ ...DEFAULT_GREEKS });
-  const [greeksB, setGreeksB]     = useState<LegGreeks>({ ...DEFAULT_GREEKS });
+  const [greeks, setGreeks]       = useState<LegGreeks>({ ...DEFAULT_GREEKS });
   const [dteInput, setDteInput]   = useState(dte ?? 30);
 
-  // Sync DTE when prop changes (user runs calculator)
+  // Sync DTE when prop changes
   useEffect(() => {
     if (dte != null) setDteInput(dte);
   }, [dte]);
 
-  const legs     = STRATEGY_LEGS[strategy];
-  const isLive   = viewMode === "live";
-  const estMode  = getEstimateMode(legs, greeksA, greeksB);
-  const canEst   = estMode !== "none";
-  const T        = dteToYears(dteInput);
-
-  function set(k: keyof StrategyParams, v: number) {
-    setParams(prev => ({ ...prev, [k]: v }));
-  }
+  const isLive  = viewMode === "live";
+  const estMode = getEstimateMode(greeks);
+  const canEst  = estMode !== "none";
+  const T       = dteToYears(dteInput);
 
   function changeStrategy(s: StrategyType) {
     setStrategy(s);
     setParams({ ...DEFAULT_PARAMS });
-    setGreeksA({ ...DEFAULT_GREEKS });
-    setGreeksB({ ...DEFAULT_GREEKS });
+    setGreeks({ ...DEFAULT_GREEKS });
   }
 
   // Chart data
   const chartData = useMemo(() => {
-    const { lo, hi } = chartRange(strategy, params, currentPrice || 100);
+    const { lo, hi } = chartRange(params, currentPrice || 100);
     const step = (hi - lo) / 80;
     return Array.from({ length: 81 }, (_, i) => {
       const S = lo + i * step;
       let pnl: number;
       if (isLive && canEst) {
         pnl = estMode === "bs"
-          ? liveEstimateBS(strategy, params, greeksA, greeksB, S, T)
-          : liveEstimateTaylor(strategy, params, greeksA, greeksB, S, currentPrice);
+          ? liveEstimateBS(strategy, params, greeks, S, T)
+          : liveEstimateTaylor(strategy, params, greeks, S, currentPrice);
       } else {
         pnl = payoffAtExpiry(strategy, params, S);
       }
       return { price: parseFloat(S.toFixed(2)), pnl: parseFloat(pnl.toFixed(4)) };
     });
-  }, [strategy, params, currentPrice, isLive, canEst, estMode, greeksA, greeksB, T]);
+  }, [strategy, params, currentPrice, isLive, canEst, estMode, greeks, T]);
 
-  // Numerical breakevens from sign changes in chart
+  // Numerical breakevens from sign changes
   const chartBreakevens = useMemo(() => {
     const bks: number[] = [];
     for (let i = 1; i < chartData.length; i++) {
@@ -426,12 +251,12 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
   const pnlAtExpected = useMemo(() => {
     if (expectedPrice <= 0) return null;
     if (isLive && estMode === "bs")
-      return liveEstimateBS(strategy, params, greeksA, greeksB, expectedPrice, T);
+      return liveEstimateBS(strategy, params, greeks, expectedPrice, T);
     if (isLive && estMode === "taylor")
-      return liveEstimateTaylor(strategy, params, greeksA, greeksB, expectedPrice, currentPrice);
-    if (isLive) return null; // no Greeks entered
+      return liveEstimateTaylor(strategy, params, greeks, expectedPrice, currentPrice);
+    if (isLive) return null;
     return payoffAtExpiry(strategy, params, expectedPrice);
-  }, [expectedPrice, isLive, estMode, strategy, params, greeksA, greeksB, T, currentPrice]);
+  }, [expectedPrice, isLive, estMode, strategy, params, greeks, T, currentPrice]);
 
   const pnlAtCurrent = currentPrice > 0
     ? payoffAtExpiry(strategy, params, currentPrice) : null;
@@ -443,15 +268,15 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
     costBasis === 0 ? "—" : ((pnl / costBasis) * 100).toFixed(1) + "%";
 
   const chartColor =
-    !isLive || !canEst ? "#6366f1"   // expiry: accent
-    : estMode === "bs" ? "#22c55e"   // BS: green
-    :                    "#f59e0b";  // Taylor: amber
+    !isLive || !canEst ? "#6366f1"
+    : estMode === "bs" ? "#22c55e"
+    :                    "#f59e0b";
 
   const modeBadge =
-    !isLive           ? { text: "Expiration payoff",           cls: "text-accent border-accent/40 bg-accent/10" }
-    : estMode === "bs"? { text: "Black-Scholes estimate",       cls: "text-call border-call/30 bg-call/10" }
-    : estMode === "taylor" ? { text: "Delta/gamma approx",      cls: "text-warn border-warn/30 bg-warn/10" }
-    :                   { text: "Enter IV or delta below",      cls: "text-text-muted border-bg-border bg-bg-raised" };
+    !isLive           ? { text: "Expiration payoff",      cls: "text-accent border-accent/40 bg-accent/10" }
+    : estMode === "bs"? { text: "Black-Scholes estimate",  cls: "text-call border-call/30 bg-call/10" }
+    : estMode === "taylor" ? { text: "Delta/gamma approx", cls: "text-warn border-warn/30 bg-warn/10" }
+    :                   { text: "Enter IV or delta below", cls: "text-text-muted border-bg-border bg-bg-raised" };
 
   return (
     <div className="card space-y-4">
@@ -469,7 +294,7 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
             </h2>
             {!open && (
               <p className="text-xs text-text-muted text-left mt-0.5">
-                Model any strategy · expiration payoff or live BS estimate
+                {strategy === "long_call" ? "Call — price goes UP" : "Put — price goes DOWN"} · expiration payoff or live BS estimate
               </p>
             )}
           </div>
@@ -535,97 +360,69 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
             </div>
           )}
 
+          {/* ── STRATEGY SELECTOR ─────────────────────────────────────────── */}
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => changeStrategy("long_call")}
+                className={clsx(
+                  "flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-colors",
+                  strategy === "long_call"
+                    ? "bg-call/15 border-call/50 text-call"
+                    : "border-bg-border text-text-muted hover:text-text-primary hover:border-call/30"
+                )}
+              >
+                Call
+              </button>
+              <button
+                type="button"
+                onClick={() => changeStrategy("long_put")}
+                className={clsx(
+                  "flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-colors",
+                  strategy === "long_put"
+                    ? "bg-put/15 border-put/50 text-put"
+                    : "border-bg-border text-text-muted hover:text-text-primary hover:border-put/30"
+                )}
+              >
+                Put
+              </button>
+            </div>
+            <p className="text-xs text-text-muted text-center">
+              {strategy === "long_call"
+                ? <span className="text-call font-medium">Price goes UP ↑</span>
+                : <span className="text-put font-medium">Price goes DOWN ↓</span>}
+            </p>
+          </div>
+
           {/* ── TOP CONTROLS ──────────────────────────────────────────────── */}
           <div className="space-y-3">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <label className="text-xs text-text-muted font-medium">Strategy</label>
-                <select className="input w-full" value={strategy}
-                  onChange={e => changeStrategy(e.target.value as StrategyType)}>
-                  {(Object.keys(STRATEGY_LABELS) as StrategyType[]).map(s => (
-                    <option key={s} value={s}>{STRATEGY_LABELS[s]}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-accent">Expected stock price</label>
-                <input
-                  type="number" step="0.01"
-                  className="input w-full font-mono ring-1 ring-accent/40 focus:ring-accent"
-                  value={expectedPrice || ""}
-                  onChange={e => setExpectedPrice(parseFloat(e.target.value) || 0)}
-                  placeholder="Where do I expect price to go?"
-                />
-              </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-accent">Expected stock price</label>
+              <input
+                type="number" step="0.01"
+                className="input w-full font-mono ring-1 ring-accent/40 focus:ring-accent"
+                value={expectedPrice || ""}
+                onChange={e => setExpectedPrice(parseFloat(e.target.value) || 0)}
+                placeholder="Where do I expect price to go?"
+              />
             </div>
 
-            {/* Leg inputs */}
-            {legs === "single" && (
-              <div className="grid grid-cols-2 gap-3">
-                <NumInput
-                  label={strategy === "cash_secured_put" ? "Strike (put)" : "Strike"}
-                  value={params.strike} onChange={v => set("strike", v)}
-                  placeholder="e.g. 500" step="0.5"
-                />
-                <NumInput
-                  label={strategy === "cash_secured_put" ? "Premium Received ($)" : "Premium Paid ($)"}
-                  value={params.premium} onChange={v => set("premium", v)}
-                  placeholder="e.g. 3.50"
-                />
-              </div>
-            )}
-
-            {legs === "spread" && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <NumInput
-                    label={strategy === "call_debit_spread"  ? "Long Call Strike"  :
-                           strategy === "put_debit_spread"   ? "Long Put Strike"   :
-                           strategy === "call_credit_spread" ? "Short Call Strike" : "Short Put Strike"}
-                    value={params.longStrike} onChange={v => set("longStrike", v)}
-                    placeholder="Lower strike" step="0.5"
-                  />
-                  <NumInput label="Premium" value={params.longPremium}
-                    onChange={v => set("longPremium", v)} placeholder="e.g. 4.00" />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <NumInput
-                    label={strategy === "call_debit_spread"  ? "Short Call Strike"  :
-                           strategy === "put_debit_spread"   ? "Short Put Strike"   :
-                           strategy === "call_credit_spread" ? "Long Call Strike"   : "Long Put Strike"}
-                    value={params.shortStrike} onChange={v => set("shortStrike", v)}
-                    placeholder="Higher strike" step="0.5"
-                  />
-                  <NumInput label="Premium" value={params.shortPremium}
-                    onChange={v => set("shortPremium", v)} placeholder="e.g. 2.00" />
-                </div>
-                {(strategy === "call_debit_spread" || strategy === "put_debit_spread") && (
-                  <p className="text-2xs text-text-muted">
-                    Net debit: <span className="font-mono text-text-secondary">
-                      ${Math.max(params.longPremium - params.shortPremium, 0).toFixed(2)}
-                    </span>
-                  </p>
-                )}
-                {(strategy === "call_credit_spread" || strategy === "put_credit_spread") && (
-                  <p className="text-2xs text-text-muted">
-                    Net credit: <span className="font-mono text-call">
-                      ${Math.max(params.shortPremium - params.longPremium, 0).toFixed(2)}
-                    </span>
-                  </p>
-                )}
-              </div>
-            )}
-
-            {legs === "covered" && (
-              <div className="grid grid-cols-3 gap-3">
-                <NumInput label="Stock Entry ($)" value={params.stockEntry}
-                  onChange={v => set("stockEntry", v)} placeholder="e.g. 185.00" step="0.01" />
-                <NumInput label="Call Strike" value={params.strike}
-                  onChange={v => set("strike", v)} placeholder="e.g. 190" step="0.5" />
-                <NumInput label="Call Premium ($)" value={params.premium}
-                  onChange={v => set("premium", v)} placeholder="e.g. 2.50" />
-              </div>
-            )}
+            <div className="grid grid-cols-2 gap-3">
+              <NumInput
+                label="Strike"
+                value={params.strike}
+                onChange={v => setParams(p => ({ ...p, strike: v }))}
+                placeholder="e.g. 500"
+                step="0.5"
+              />
+              <NumInput
+                label="Premium Paid ($)"
+                value={params.premium}
+                onChange={v => setParams(p => ({ ...p, premium: v }))}
+                placeholder="e.g. 3.50"
+              />
+            </div>
           </div>
 
           {/* ── LIVE MODE: IV / GREEKS INPUTS ─────────────────────────────── */}
@@ -638,7 +435,6 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
                 </span>
               </p>
 
-              {/* DTE */}
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-0.5">
                   <label className="text-2xs text-text-muted">DTE (days)</label>
@@ -666,74 +462,14 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
                 </div>
               </div>
 
-              {/* Single-leg */}
-              {legs === "single" && (
-                <>
-                  <p className="text-2xs text-text-muted font-medium">
-                    {strategy === "cash_secured_put" ? "Short put" : "Option"} inputs
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <GreekInput label="IV %" value={greeksA.iv}
-                      onChange={v => setGreeksA(g => ({ ...g, iv: v }))} placeholder="e.g. 35" />
-                    <GreekInput label="Delta" value={greeksA.delta}
-                      onChange={v => setGreeksA(g => ({ ...g, delta: v }))} />
-                    <GreekInput label="Gamma" value={greeksA.gamma}
-                      onChange={v => setGreeksA(g => ({ ...g, gamma: v }))} />
-                  </div>
-                </>
-              )}
-
-              {/* Spread */}
-              {legs === "spread" && (
-                <div className="space-y-2">
-                  <p className="text-2xs text-text-muted font-medium">
-                    {strategy === "call_debit_spread"  ? "Long Call"        :
-                     strategy === "put_debit_spread"   ? "Long Put"         :
-                     strategy === "call_credit_spread" ? "Short Call (sold)":
-                     "Short Put (sold)"} inputs
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <GreekInput label="IV %" value={greeksA.iv}
-                      onChange={v => setGreeksA(g => ({ ...g, iv: v }))} placeholder="e.g. 35" />
-                    <GreekInput label="Delta" value={greeksA.delta}
-                      onChange={v => setGreeksA(g => ({ ...g, delta: v }))} />
-                    <GreekInput label="Gamma" value={greeksA.gamma}
-                      onChange={v => setGreeksA(g => ({ ...g, gamma: v }))} />
-                  </div>
-                  <p className="text-2xs text-text-muted font-medium mt-1">
-                    {strategy === "call_debit_spread"  ? "Short Call"         :
-                     strategy === "put_debit_spread"   ? "Short Put"          :
-                     strategy === "call_credit_spread" ? "Long Call (hedge)"  :
-                     "Long Put (hedge)"} inputs{" "}
-                    <span className="font-normal">(leave IV 0 to use same IV as first leg)</span>
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <GreekInput label="IV %" value={greeksB.iv}
-                      onChange={v => setGreeksB(g => ({ ...g, iv: v }))} placeholder="0 = same" />
-                    <GreekInput label="Delta" value={greeksB.delta}
-                      onChange={v => setGreeksB(g => ({ ...g, delta: v }))} />
-                    <GreekInput label="Gamma" value={greeksB.gamma}
-                      onChange={v => setGreeksB(g => ({ ...g, gamma: v }))} />
-                  </div>
-                </div>
-              )}
-
-              {/* Covered */}
-              {legs === "covered" && (
-                <>
-                  <p className="text-2xs text-text-muted">
-                    Short call inputs (stock portion is always exact)
-                  </p>
-                  <div className="grid grid-cols-3 gap-2">
-                    <GreekInput label="IV %" value={greeksA.iv}
-                      onChange={v => setGreeksA(g => ({ ...g, iv: v }))} placeholder="e.g. 28" />
-                    <GreekInput label="Delta" value={greeksA.delta}
-                      onChange={v => setGreeksA(g => ({ ...g, delta: v }))} />
-                    <GreekInput label="Gamma" value={greeksA.gamma}
-                      onChange={v => setGreeksA(g => ({ ...g, gamma: v }))} />
-                  </div>
-                </>
-              )}
+              <div className="grid grid-cols-3 gap-2">
+                <GreekInput label="IV %" value={greeks.iv}
+                  onChange={v => setGreeks(g => ({ ...g, iv: v }))} placeholder="e.g. 35" />
+                <GreekInput label="Delta" value={greeks.delta}
+                  onChange={v => setGreeks(g => ({ ...g, delta: v }))} />
+                <GreekInput label="Gamma" value={greeks.gamma}
+                  onChange={v => setGreeks(g => ({ ...g, gamma: v }))} />
+              </div>
 
               {!canEst && (
                 <p className="text-2xs text-warn">
@@ -937,7 +673,6 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
                   </div>
                 )}
               </div>
-              <p className="text-2xs text-text-muted">Exact intrinsic payoff at expiration.</p>
             </div>
           )}
 

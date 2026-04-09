@@ -39,7 +39,7 @@ function CustomTooltip({ active, payload }: any) {
 }
 
 export default function ROIChart({ data }: Props) {
-  const strikes = [...data.all_strikes]
+  const strikes = [...(data.all_strikes ?? [])]
     .filter(s => s.tier !== "avoid")
     .sort((a, b) => a.strike - b.strike);
 

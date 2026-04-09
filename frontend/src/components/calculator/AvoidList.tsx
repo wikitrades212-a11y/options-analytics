@@ -8,7 +8,7 @@ interface Props {
 }
 
 export default function AvoidList({ strikes }: Props) {
-  if (strikes.length === 0) return null;
+  if (!strikes || strikes.length === 0) return null;
 
   return (
     <div className="card space-y-3">

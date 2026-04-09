@@ -118,9 +118,6 @@ export default function InputPanel({
     ? ((params.target_price - params.current_price) / params.current_price * 100).toFixed(2)
     : null;
 
-  const impliedDirection = params.target_price > params.current_price
-    ? "call" : params.target_price < params.current_price ? "put" : null;
-
   const nearest = useMemo(() => nearestExpiry(expirations), [expirations]);
   const weekly  = useMemo(() => nextWeeklyExpiry(expirations), [expirations]);
 
@@ -295,32 +292,34 @@ export default function InputPanel({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {/* Direction */}
         <div className="space-y-1.5">
-          <label className="text-xs text-text-muted font-medium">
-            Direction
-            {impliedDirection && (
-              <span className={clsx(
-                "ml-2 text-2xs font-medium",
-                impliedDirection === "call" ? "text-call" : "text-put"
-              )}>
-                (auto → {impliedDirection.toUpperCase()})
-              </span>
-            )}
-          </label>
+          <label className="text-xs text-text-muted font-medium">Direction</label>
           <div className="flex gap-1 bg-bg-raised rounded-lg p-0.5">
-            {(["auto", "call", "put"] as const).map(t => (
-              <button key={t} onClick={() => onChange({ option_type: t })}
-                className={clsx(
-                  "flex-1 text-xs py-1.5 rounded-md font-medium capitalize transition-colors",
-                  params.option_type === t
-                    ? t === "call" ? "bg-call text-white"
-                      : t === "put" ? "bg-put text-white"
-                      : "bg-accent text-white"
-                    : "text-text-muted hover:text-text-primary"
-                )}>
-                {t}
-              </button>
-            ))}
+            <button
+              onClick={() => onChange({ option_type: "call" })}
+              className={clsx(
+                "flex-1 text-xs py-1.5 rounded-md font-medium transition-colors",
+                params.option_type === "call"
+                  ? "bg-call text-white"
+                  : "text-text-muted hover:text-text-primary"
+              )}>
+              Call
+            </button>
+            <button
+              onClick={() => onChange({ option_type: "put" })}
+              className={clsx(
+                "flex-1 text-xs py-1.5 rounded-md font-medium transition-colors",
+                params.option_type === "put"
+                  ? "bg-put text-white"
+                  : "text-text-muted hover:text-text-primary"
+              )}>
+              Put
+            </button>
           </div>
+          <p className="text-2xs text-text-muted">
+            {params.option_type === "call"
+              ? "Bet price goes UP"
+              : "Bet price goes DOWN"}
+          </p>
         </div>
 
         {/* Max premium */}

@@ -42,7 +42,7 @@ const DEFAULT_PARAMS: CalculatorParams = {
   ticker: "SPY",
   current_price: 0,
   target_price: 0,
-  option_type: "auto",
+  option_type: "call",
   expiration: "",
 };
 
@@ -85,7 +85,7 @@ function SummaryBar({ data }: { data: CalculatorResponse }) {
       </span>
       <ExpiryFitBadge score={data.expiry_fit_score} dte={data.dte} />
       <span className="ml-auto text-2xs">
-        {data.all_strikes.length} strikes analyzed
+        {(data.all_strikes ?? []).length} strikes analyzed
       </span>
     </div>
   );
@@ -107,8 +107,8 @@ function ResultBlock({ data, label }: { data: CalculatorResponse; label?: string
       <SummaryBar data={data} />
       <RecommendationCards data={data} />
       <ROIChart data={data} />
-      <StrikeTable strikes={data.all_strikes} currentPrice={data.current_price} targetPrice={data.target_price} />
-      {data.avoid_list.length > 0 && <AvoidList strikes={data.avoid_list} />}
+      <StrikeTable strikes={data.all_strikes ?? []} currentPrice={data.current_price} targetPrice={data.target_price} />
+      {(data.avoid_list ?? []).length > 0 && <AvoidList strikes={data.avoid_list ?? []} />}
     </div>
   );
 }
