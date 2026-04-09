@@ -1,13 +1,11 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import clsx from "clsx";
 import type { CalculatorParams, CalculatorResponse } from "@/lib/types";
 import { useExpirations } from "@/hooks/useOptions";
 import { useCalculator } from "@/hooks/useCalculator";
 import InputPanel from "@/components/calculator/InputPanel";
-import RecommendationCards from "@/components/calculator/RecommendationCards";
-import ROIChart from "@/components/calculator/ROIChart";
 import StrikeTable from "@/components/calculator/StrikeTable";
 import AvoidList from "@/components/calculator/AvoidList";
 import StrategyVisualizer from "@/components/calculator/StrategyVisualizer";
@@ -42,7 +40,7 @@ const DEFAULT_PARAMS: CalculatorParams = {
   ticker: "SPY",
   current_price: 0,
   target_price: 0,
-  option_type: "call",
+  option_type: "auto",
   expiration: "",
 };
 
@@ -105,8 +103,6 @@ function ResultBlock({ data, label }: { data: CalculatorResponse; label?: string
         </div>
       )}
       <SummaryBar data={data} />
-      <RecommendationCards data={data} />
-      <ROIChart data={data} />
       <StrikeTable strikes={data.all_strikes ?? []} currentPrice={data.current_price} targetPrice={data.target_price} />
       {(data.avoid_list ?? []).length > 0 && <AvoidList strikes={data.avoid_list ?? []} />}
     </div>
@@ -291,6 +287,16 @@ export default function TargetPage() {
   const { data: expirations } = useExpirations(params.ticker || null);
   const expirationList = expirations?.expirations ?? [];
 
+  // Resolve Auto direction live based on current vs expected price
+  const resolvedDirection = useMemo((): "call" | "put" => {
+    if (params.option_type !== "auto") return params.option_type as "call" | "put";
+    if (params.current_price > 0 && params.target_price > 0) {
+      if (params.target_price > params.current_price) return "call";
+      if (params.target_price < params.current_price) return "put";
+    }
+    return "call"; // neutral fallback
+  }, [params.option_type, params.current_price, params.target_price]);
+
   // Reset on ticker change
   const prevTickerRef = useRef(params.ticker);
   useEffect(() => {
@@ -322,7 +328,8 @@ export default function TargetPage() {
 
   const handleSubmit = useCallback(() => {
     incrementUsage();
-    const snap = { ...params };
+    // Resolve "auto" to concrete call/put before sending to API
+    const snap = { ...params, option_type: resolvedDirection };
     setSubmitted(snap);
     setLoadedScenario(null);
     if (compareMode && compareExpiry) {
@@ -330,7 +337,7 @@ export default function TargetPage() {
     } else {
       setCompareSubmitted(null);
     }
-  }, [params, compareMode, compareExpiry]);
+  }, [params, resolvedDirection, compareMode, compareExpiry]);
 
   // ── Save scenario ──────────────────────────────────────────────────────────
   const saveToJournal = useCallback(() => {
@@ -447,6 +454,7 @@ export default function TargetPage() {
           targetPrice={params.target_price}
           expiration={params.expiration || data?.expiration}
           dte={data?.dte}
+          suggestedDirection={resolvedDirection}
         />
       )}
 

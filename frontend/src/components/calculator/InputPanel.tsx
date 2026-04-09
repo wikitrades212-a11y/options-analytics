@@ -295,6 +295,16 @@ export default function InputPanel({
           <label className="text-xs text-text-muted font-medium">Direction</label>
           <div className="flex gap-1 bg-bg-raised rounded-lg p-0.5">
             <button
+              onClick={() => onChange({ option_type: "auto" })}
+              className={clsx(
+                "flex-1 text-xs py-1.5 rounded-md font-medium transition-colors",
+                params.option_type === "auto"
+                  ? "bg-accent text-white"
+                  : "text-text-muted hover:text-text-primary"
+              )}>
+              Auto
+            </button>
+            <button
               onClick={() => onChange({ option_type: "call" })}
               className={clsx(
                 "flex-1 text-xs py-1.5 rounded-md font-medium transition-colors",
@@ -315,11 +325,19 @@ export default function InputPanel({
               Put
             </button>
           </div>
-          <p className="text-2xs text-text-muted">
-            {params.option_type === "call"
-              ? "Bet price goes UP"
-              : "Bet price goes DOWN"}
-          </p>
+          {params.option_type === "auto" ? (
+            params.current_price > 0 && params.target_price > 0
+              ? params.target_price > params.current_price
+                ? <p className="text-2xs"><span className="text-call font-semibold">Auto → CALL</span> <span className="text-text-muted">(expected above current)</span></p>
+                : params.target_price < params.current_price
+                ? <p className="text-2xs"><span className="text-put font-semibold">Auto → PUT</span> <span className="text-text-muted">(expected below current)</span></p>
+                : <p className="text-2xs text-text-muted">Auto — enter differing prices to resolve</p>
+              : <p className="text-2xs text-text-muted">Auto: Call if expected &gt; current · Put if below</p>
+          ) : (
+            <p className="text-2xs text-text-muted">
+              {params.option_type === "call" ? "Bet price goes UP" : "Bet price goes DOWN"}
+            </p>
+          )}
         </div>
 
         {/* Max premium */}

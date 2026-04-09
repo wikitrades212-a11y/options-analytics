@@ -184,11 +184,14 @@ interface Props {
   targetPrice:  number;
   expiration?:  string;
   dte?:         number;
+  suggestedDirection?: "call" | "put";
 }
 
-export default function StrategyVisualizer({ currentPrice, targetPrice, expiration, dte }: Props) {
+export default function StrategyVisualizer({ currentPrice, targetPrice, expiration, dte, suggestedDirection }: Props) {
   const [open, setOpen]           = useState(false);
-  const [strategy, setStrategy]   = useState<StrategyType>("long_call");
+  const [strategy, setStrategy]   = useState<StrategyType>(
+    suggestedDirection === "put" ? "long_put" : "long_call"
+  );
   const [params, setParams]       = useState<StrategyParams>({ ...DEFAULT_PARAMS });
   const [expectedPrice, setExpectedPrice] = useState(targetPrice || 0);
   const [viewMode, setViewMode]   = useState<"expiry" | "live">("expiry");
@@ -199,6 +202,13 @@ export default function StrategyVisualizer({ currentPrice, targetPrice, expirati
   useEffect(() => {
     if (dte != null) setDteInput(dte);
   }, [dte]);
+
+  // Sync strategy when Auto direction resolves (tracks suggested direction changes)
+  useEffect(() => {
+    if (suggestedDirection) {
+      setStrategy(suggestedDirection === "call" ? "long_call" : "long_put");
+    }
+  }, [suggestedDirection]);
 
   const isLive  = viewMode === "live";
   const estMode = getEstimateMode(greeks);
