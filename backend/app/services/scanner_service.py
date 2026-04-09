@@ -19,8 +19,9 @@ Cluster grouping:
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.models.options import OptionContract
@@ -240,16 +241,61 @@ def _store_result(result: dict) -> None:
     _last_result = result
 
 
+# ── Weekday delivery schedule (America/New_York) ──────────────────────────────
+
+_ET = ZoneInfo("America/New_York")
+
+# One premarket run + hourly from market open through 4:30 PM ET (Mon–Fri only)
+_SCAN_TIMES: list[dtime] = [
+    dtime(8, 30),                                                 # premarket
+    dtime(9, 30),  dtime(10, 30), dtime(11, 30), dtime(12, 30),  # morning
+    dtime(13, 30), dtime(14, 30), dtime(15, 30), dtime(16, 30),  # afternoon
+]
+
+
+def _next_scan_dt() -> datetime:
+    """Return the next scheduled scan datetime (ET-aware, weekdays only)."""
+    now = datetime.now(_ET)
+    today = now.date()
+
+    # Try remaining slots today if it's a weekday
+    if today.weekday() < 5:  # 0=Mon … 4=Fri
+        for t in _SCAN_TIMES:
+            cand = datetime(today.year, today.month, today.day, t.hour, t.minute, tzinfo=_ET)
+            if cand > now:
+                return cand
+
+    # Walk forward to find the next weekday, use 8:30 AM
+    for delta in range(1, 8):
+        d = today + timedelta(days=delta)
+        if d.weekday() < 5:
+            t = _SCAN_TIMES[0]
+            return datetime(d.year, d.month, d.day, t.hour, t.minute, tzinfo=_ET)
+
+    raise RuntimeError("Could not compute next scan time")
+
+
 # ── Background scheduler ──────────────────────────────────────────────────────
 
 async def _scheduler_loop() -> None:
     from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
 
-    interval = settings.scan_interval_minutes * 60
-    logger.info(f"Scanner scheduler started — interval {settings.scan_interval_minutes}m")
+    logger.info("Scanner scheduler started — weekdays 8:30 AM + hourly 9:30–4:30 PM ET")
 
     while True:
-        await asyncio.sleep(interval)
+        next_dt = _next_scan_dt()
+        sleep_secs = (next_dt - datetime.now(_ET)).total_seconds()
+        logger.info(
+            "Next scan at %s ET (in %.1f min)",
+            next_dt.strftime("%Y-%m-%d %H:%M"),
+            sleep_secs / 60,
+        )
+
+        try:
+            await asyncio.sleep(max(sleep_secs, 0))
+        except asyncio.CancelledError:
+            raise
+
         logger.info("Scheduled scan starting…")
         try:
             result = await run_scan()
