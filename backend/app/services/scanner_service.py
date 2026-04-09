@@ -278,7 +278,7 @@ def _next_scan_dt() -> datetime:
 # ── Background scheduler ──────────────────────────────────────────────────────
 
 async def _scheduler_loop() -> None:
-    from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
+   # from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
     from app.services.social_service import PostType, queue_scan_result  # noqa: PLC0415
 
     logger.info("Scanner scheduler started — weekdays 8:30 AM + hourly 9:30–4:30 PM ET")
@@ -305,7 +305,7 @@ async def _scheduler_loop() -> None:
                 f"Scan complete — {len(result['alerts'])} alerts "
                 f"across {len(result['tickers_scanned'])} tickers"
             )
-            await send_scan_summary(result)
+           # await send_scan_summary(result)
 
             # Social automation — additive, does not affect Telegram flow
             if next_dt.hour == 8:
