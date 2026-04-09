@@ -5,14 +5,13 @@ Contracts are PRE-FILTERED to remove noise before any scoring.
 Remaining contracts are scored with a weighted combination of signals,
 each normalized to [0, 1] so no single raw metric dominates.
 
-ZERO-OI HANDLING (explicit):
-  Contracts with open_interest == 0 are EXCLUDED before scoring.
-  When OI = 0, vol_oi_ratio = volume / max(0, 1) = volume, which is
-  effectively just the raw volume — an unreliable inflation that drives
-  scores to 100. These contracts have no established market participation
-  and produce false signals. They are dropped unconditionally.
-  To override, set MIN_OI = 0 (allows zero-OI with no vol/OI advantage
-  since vol_oi_ratio will still be capped and normalized fairly).
+LOW-OI HANDLING (explicit):
+  Contracts with open_interest < 50 are EXCLUDED before scoring.
+  Very low OI (1–49) inflates vol_oi_ratio artificially: OI=1 with volume=100
+  gives a ratio of 100×, which dominates after normalization even with VOL_OI_CAP.
+  These contracts have negligible established market participation and produce
+  false "unusual" signals. They are dropped unconditionally.
+  To override, lower MIN_OI in unusual_engine.py.
 
 VOL/OI CAP:
   vol_oi_ratio is capped at VOL_OI_CAP (50×) before global normalization.
@@ -67,7 +66,7 @@ WEIGHTS = {
 assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
 # ── Pre-filter thresholds ─────────────────────────────────────────────────────
-MIN_OI            = 1          # open_interest >= 1 (zero OI excluded)
+MIN_OI            = 50         # open_interest >= 50; OI=1-5 inflates vol/OI ratio artificially
 MIN_VOLUME        = 10         # at least 10 contracts traded today
 MIN_VOL_NOTIONAL  = 5_000.0   # at least $5k in premium-volume flow
 MAX_SPREAD_PCT    = 0.80       # (ask - bid) / mid <= 80%

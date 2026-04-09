@@ -55,6 +55,8 @@ async def run_scan() -> dict:
     min_premium = settings.scan_min_premium
     min_volume  = settings.scan_min_volume
     top_n       = settings.scan_top_n
+    # Global cap across all tickers — prevents N_tickers × top_n bloat
+    FINAL_CAP = 15
 
     scanned: List[str] = []
     failed:  List[str] = []
@@ -64,13 +66,21 @@ async def run_scan() -> dict:
         try:
             result = await get_unusual_options(ticker)
             scanned.append(ticker)
-            filtered = [
+            logger.info(
+                "[%s] combined candidates: %d", ticker, len(result.combined)
+            )
+            after_prefilter = [
                 c for c in result.combined
                 if c.unusual_score >= min_score
                 and c.vol_notional  >= min_premium
                 and c.volume        >= min_volume
-            ][:top_n]
-            for c in filtered:
+            ]
+            logger.info(
+                "[%s] after score/premium/volume gate: %d → taking top %d",
+                ticker, len(after_prefilter), top_n,
+            )
+            per_ticker = after_prefilter[:top_n]
+            for c in per_ticker:
                 alerts.append({
                     "contract":         c,
                     "bias":             _bias(c),
@@ -83,6 +93,11 @@ async def run_scan() -> dict:
     await asyncio.gather(*[_scan_one(t) for t in tickers])
 
     alerts.sort(key=lambda a: a["contract"].unusual_score, reverse=True)
+    logger.info(
+        "Scan complete: %d raw alerts across %d tickers → capping to %d",
+        len(alerts), len(scanned), FINAL_CAP,
+    )
+    alerts = alerts[:FINAL_CAP]
 
     return {
         "scanned_at":         datetime.utcnow(),
