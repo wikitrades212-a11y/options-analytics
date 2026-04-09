@@ -20,9 +20,11 @@ import app.cache as cache
 
 logger = logging.getLogger(__name__)
 
-UNUSUAL_TOP_N    = 25
-MAX_EXPIRATIONS  = 6    # fetch nearest 6 expirations (covers 0DTE → ~6 weeks)
-CONCURRENCY      = 10   # parallel expiry fetches
+UNUSUAL_TOP_N        = 10   # max alerts per type (calls / puts)
+UNUSUAL_MIN_SCORE    = 30.0 # drop contracts below this normalized score
+UNUSUAL_MAX_COMBINED = 15   # hard cap on combined list
+MAX_EXPIRATIONS      = 6    # fetch nearest 6 expirations (covers 0DTE → ~6 weeks)
+CONCURRENCY          = 10   # parallel expiry fetches
 
 
 def _hydrate(raw: dict, underlying_price: float) -> OptionContract:
@@ -114,9 +116,13 @@ async def get_unusual_options(ticker: str) -> UnusualOptionsResponse:
     chain      = await get_full_chain(ticker)
     all_scored = chain.contracts
 
-    top_calls  = [c for c in all_scored if c.option_type == "call"][:UNUSUAL_TOP_N]
-    top_puts   = [c for c in all_scored if c.option_type == "put" ][:UNUSUAL_TOP_N]
-    combined   = all_scored[:UNUSUAL_TOP_N * 2]
+    # Only include contracts that passed pre-filtering (unusual_score > 0)
+    # and meet the minimum quality bar.
+    scored = [c for c in all_scored if c.unusual_score >= UNUSUAL_MIN_SCORE]
+
+    top_calls  = [c for c in scored if c.option_type == "call"][:UNUSUAL_TOP_N]
+    top_puts   = [c for c in scored if c.option_type == "put" ][:UNUSUAL_TOP_N]
+    combined   = scored[:UNUSUAL_MAX_COMBINED]
 
     result = UnusualOptionsResponse(
         ticker             = ticker,
