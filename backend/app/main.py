@@ -1,6 +1,7 @@
 """
 Options Analytics API — FastAPI entrypoint.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -28,11 +29,9 @@ logger = logging.getLogger(__name__)
 _provider_ready: Optional[bool] = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Warm up provider session on startup."""
+async def _warmup_provider():
+    """Background task: check provider health without blocking startup."""
     global _provider_ready
-    logger.info(f"Starting with provider: {settings.data_provider}")
     try:
         ok = await provider.health_check()
         _provider_ready = ok
@@ -44,6 +43,12 @@ async def lifespan(app: FastAPI):
         _provider_ready = False
         logger.warning(f"Provider warmup error (non-fatal): {exc}")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start background tasks; provider warmup runs concurrently so uvicorn binds immediately."""
+    logger.info(f"Starting with provider: {settings.data_provider}")
+    asyncio.create_task(_warmup_provider())
     start_scheduler()
     start_futures_scheduler()
     start_social_scheduler()
