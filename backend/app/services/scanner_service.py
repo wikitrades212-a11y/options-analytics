@@ -278,16 +278,19 @@ def _next_scan_dt() -> datetime:
 # ── Background scheduler ──────────────────────────────────────────────────────
 
 async def _scheduler_loop() -> None:
-   # from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
+    from app.services.telegram_service import send_scan_summary  # noqa: PLC0415
     from app.services.social_service import PostType, queue_scan_result  # noqa: PLC0415
 
     logger.info("Scanner scheduler started — weekdays 8:30 AM + hourly 9:30–4:30 PM ET")
 
     while True:
+        now_et = datetime.now(_ET)
         next_dt = _next_scan_dt()
-        sleep_secs = (next_dt - datetime.now(_ET)).total_seconds()
+        sleep_secs = (next_dt - now_et).total_seconds()
+
         logger.info(
-            "Next scan at %s ET (in %.1f min)",
+            "[scheduler] now=%s ET  |  next=%s ET  (in %.1f min)",
+            now_et.strftime("%Y-%m-%d %H:%M:%S"),
             next_dt.strftime("%Y-%m-%d %H:%M"),
             sleep_secs / 60,
         )
@@ -297,13 +300,20 @@ async def _scheduler_loop() -> None:
         except asyncio.CancelledError:
             raise
 
-        logger.info("Scheduled scan starting…")
+        wake_et = datetime.now(_ET)
+        logger.info(
+            "[scheduler] woke at %s ET — executing slot %s ET",
+            wake_et.strftime("%Y-%m-%d %H:%M:%S"),
+            next_dt.strftime("%H:%M"),
+        )
+
         try:
             result = await run_scan()
             _store_result(result)
             logger.info(
-                f"Scan complete — {len(result['alerts'])} alerts "
-                f"across {len(result['tickers_scanned'])} tickers"
+                "[scheduler] scan done — %d alerts across %d tickers",
+                len(result["alerts"]),
+                len(result["tickers_scanned"]),
             )
             await send_scan_summary(result)
 
@@ -319,7 +329,7 @@ async def _scheduler_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(f"Scheduled scan error: {exc}")
+            logger.error("[scheduler] scan error: %s", exc, exc_info=True)
 
 
 def start_scheduler() -> None:
