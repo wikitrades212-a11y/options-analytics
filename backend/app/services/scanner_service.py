@@ -305,7 +305,7 @@ async def _scheduler_loop() -> None:
                 f"Scan complete — {len(result['alerts'])} alerts "
                 f"across {len(result['tickers_scanned'])} tickers"
             )
-           # await send_scan_summary(result)
+            await send_scan_summary(result)
 
             # Social automation — additive, does not affect Telegram flow
             if next_dt.hour == 8:
