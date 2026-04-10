@@ -159,6 +159,7 @@ def format_summary(scan_result: dict) -> str:
 
 async def _post(text: str) -> bool:
     if not settings.telegram_enabled:
+        logger.warning("Telegram disabled (TELEGRAM_ENABLED=false) — skipping send")
         return False
     token   = settings.telegram_bot_token
     chat_id = settings.telegram_chat_id
@@ -167,6 +168,7 @@ async def _post(text: str) -> bool:
         return False
 
     url = _SEND_URL.format(token=token)
+    logger.info("Telegram POST → chat_id=%s text_len=%d", chat_id, len(text))
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json={
@@ -175,6 +177,7 @@ async def _post(text: str) -> bool:
                 "parse_mode": "Markdown",
             })
             resp.raise_for_status()
+        logger.info("Telegram POST OK")
         return True
     except Exception as exc:
         logger.error(f"Telegram send error: {exc}")
@@ -188,11 +191,11 @@ async def send_alert(contract: OptionContract, bias: str, underlying_price: floa
 async def send_scan_summary(scan_result: dict) -> None:
     """Send one message per alert (capped at 10)."""
     alerts = scan_result["alerts"]
+    logger.info("send_scan_summary called: %d alerts, telegram_enabled=%s",
+                len(alerts), settings.telegram_enabled)
     if not alerts:
         logger.info("No alerts to send.")
         return
-
-   
 
     for alert in alerts[:10]:
         if alert.get("cluster_count", 1) > 1:
