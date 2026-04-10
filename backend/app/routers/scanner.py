@@ -8,7 +8,7 @@ import logging
 from fastapi import APIRouter, Query
 
 from app.services.scanner_service import run_scan, get_last_result, _store_result
-
+from app.services.telegram_service import send_scan_summary
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/scanner", tags=["scanner"])
@@ -19,6 +19,8 @@ async def trigger_scan(notify: bool = Query(True, description="Send Telegram ale
     result = await run_scan()
     _store_result(result)
 
+    if notify:
+        await send_scan_summary(result)
 
     return {
         "scanned_at":         result["scanned_at"].isoformat(),
