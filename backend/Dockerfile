@@ -12,4 +12,4 @@ COPY . .
 EXPOSE 8000
 
 # Railway injects $PORT at runtime
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "echo \"Starting on port ${PORT:-8000}\" && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
