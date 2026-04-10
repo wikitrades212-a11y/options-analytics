@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.models.options import OptionContract
 from app.services.options_service import get_unusual_options
+from app.services.trending_service import get_trending_tickers
 from app.services.unusual_engine import MIN_OI as ENGINE_MIN_OI
 
 logger = logging.getLogger(__name__)
@@ -140,17 +141,33 @@ async def run_scan() -> dict:
     Scan all configured tickers. Applies quality gate, cooldown, and cluster
     grouping before returning the final alert list.
     """
-    tickers     = [t.strip().upper() for t in settings.scan_tickers.split(",") if t.strip()]
     min_score   = settings.scan_min_score
     min_premium = settings.scan_min_premium
     min_volume  = settings.scan_min_volume
     top_n       = settings.scan_top_n
     FINAL_CAP   = 15
 
+    # ── Base tickers (always included) ───────────────────────────────────────
+    base_tickers = [t.strip().upper() for t in settings.scan_tickers.split(",") if t.strip()]
+
+    # ── Trending tickers (augment, never replace base) ────────────────────────
+    TRENDING_CAP = 10
+    try:
+        trending_raw = await get_trending_tickers(limit=TRENDING_CAP)
+    except Exception as exc:
+        logger.warning("run_scan: trending fetch error: %s", exc)
+        trending_raw = []
+
+    base_set       = set(base_tickers)
+    trending_added = [t for t in trending_raw if t not in base_set][:TRENDING_CAP]
+    tickers        = base_tickers + trending_added
+
     logger.info(
-        "run_scan START — tickers=%d  min_score=%.1f  min_premium=%.0f  "
+        "run_scan START — base=%d  trending_added=%d  total=%d  "
+        "tickers=%s  min_score=%.1f  min_premium=%.0f  "
         "min_volume=%d  top_n=%d  FINAL_CAP=%d  ENGINE_MIN_OI=%d",
-        len(tickers), min_score, min_premium, min_volume, top_n, FINAL_CAP, ENGINE_MIN_OI,
+        len(base_tickers), len(trending_added), len(tickers),
+        tickers, min_score, min_premium, min_volume, top_n, FINAL_CAP, ENGINE_MIN_OI,
     )
 
     scanned: List[str] = []

@@ -11,6 +11,7 @@ import httpx
 
 from app.config import settings
 from app.models.options import OptionContract
+from app.services.csv_logger import log_alerts_to_csv
 
 logger = logging.getLogger(__name__)
 
@@ -206,4 +207,5 @@ async def send_scan_summary(scan_result: dict) -> None:
                 alert["bias"],
                 alert["underlying_price"],
             )
-        await _post(text)
+        sent = await _post(text)
+        log_alerts_to_csv([alert], telegram_sent=sent)
