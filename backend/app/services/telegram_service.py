@@ -147,7 +147,7 @@ def format_summary(scan_result: dict) -> str:
     ts      = scan_result["scanned_at"].strftime("%H:%M UTC")
 
     return (
-        f"🔍 *Tradable Flow Scan*  `{ts}`\n"
+        
         "─" * 26 + "\n"
         f"Tickers: `{tickers}`\n"
         f"Failed: `{failed}`\n"
@@ -186,13 +186,13 @@ async def send_alert(contract: OptionContract, bias: str, underlying_price: floa
 
 
 async def send_scan_summary(scan_result: dict) -> None:
-    """Send summary header then one message per alert (capped at 10)."""
+    """Send one message per alert (capped at 10)."""
     alerts = scan_result["alerts"]
     if not alerts:
         logger.info("No alerts to send.")
         return
 
-    await _post(format_summary(scan_result))
+   
 
     for alert in alerts[:10]:
         if alert.get("cluster_count", 1) > 1:
