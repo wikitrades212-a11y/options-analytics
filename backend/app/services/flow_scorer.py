@@ -609,6 +609,128 @@ def _build_bias(analyzed: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# MARKET STRUCTURE — propagation / rotation classification
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _classify_market_structure(
+    actionable: List[Dict[str, Any]],
+    bias: Dict[str, Any],
+    sector_dynamics: Dict[str, Any],
+) -> Dict[str, List[str]]:
+    """
+    Assign each non-index STRONG/INSTITUTIONAL ticker a propagation role:
+
+    Bearish context
+      first_to_move  — bearish names in the dominant weak sector (drop first)
+      holders        — bullish names in neutral/strong sectors (resist early)
+      late_movers    — bullish names in split/weak sectors (hold then roll)
+
+    Bullish context mirrors the logic.
+    RANGE/CHOP: just split bears vs bulls, no late-mover signal.
+    """
+    refined       = bias.get("refined_label", bias["label"])
+    macro_bearish = "BEARISH" in refined
+    macro_bullish = "BULLISH" in refined and not macro_bearish
+
+    top_bear_sector = sector_dynamics.get("top_bear_sector")
+    top_bull_sector = sector_dynamics.get("top_bull_sector")
+
+    # Sectors with meaningful flow in BOTH directions
+    split_sectors: Set[str] = {
+        s for s in sector_dynamics.get("bear_tickers", {})
+        if s in sector_dynamics.get("bull_tickers", {})
+        and sector_dynamics["bear_score_by_sector"].get(s, 0) > 0
+        and sector_dynamics["bull_score_by_sector"].get(s, 0) > 0
+    }
+
+    candidates = sorted(
+        [
+            a for a in actionable
+            if not a["is_index"] and a["strength"] in ("INSTITUTIONAL", "STRONG")
+        ],
+        key=lambda x: x["model_score"],
+        reverse=True,
+    )
+
+    first_to_move: List[str] = []
+    holders:       List[str] = []
+    late_movers:   List[str] = []
+    seen:          Set[str]  = set()
+
+    if macro_bearish:
+        # First to drop — bearish names, weak sector first
+        bear_cands = sorted(
+            [a for a in candidates if a["sentiment"] == "BEARISH"],
+            key=lambda a: (0 if _get_sector(a["ticker"]) == top_bear_sector else 1,
+                           -a["model_score"]),
+        )
+        for a in bear_cands:
+            if a["ticker"] not in seen and len(first_to_move) < 3:
+                first_to_move.append(a["ticker"])
+                seen.add(a["ticker"])
+
+        # Bullish names: split into clean holders vs late-weakness candidates
+        for a in candidates:
+            if a["sentiment"] != "BULLISH" or a["ticker"] in seen:
+                continue
+            sector = _get_sector(a["ticker"])
+            if sector in split_sectors or sector == top_bear_sector:
+                # Holding now, but sector is already cracking → will roll later
+                if len(late_movers) < 3:
+                    late_movers.append(a["ticker"])
+                    seen.add(a["ticker"])
+            else:
+                # Genuinely neutral/strong sector — clean relative strength hold
+                if len(holders) < 3:
+                    holders.append(a["ticker"])
+                    seen.add(a["ticker"])
+
+    elif macro_bullish:
+        # First to pop — bullish names, strong sector first
+        bull_cands = sorted(
+            [a for a in candidates if a["sentiment"] == "BULLISH"],
+            key=lambda a: (0 if _get_sector(a["ticker"]) == top_bull_sector else 1,
+                           -a["model_score"]),
+        )
+        for a in bull_cands:
+            if a["ticker"] not in seen and len(first_to_move) < 3:
+                first_to_move.append(a["ticker"])
+                seen.add(a["ticker"])
+
+        # Bearish names: split into persistent shorts vs late-fade candidates
+        for a in candidates:
+            if a["sentiment"] != "BEARISH" or a["ticker"] in seen:
+                continue
+            sector = _get_sector(a["ticker"])
+            if sector in split_sectors or sector == top_bull_sector:
+                if len(late_movers) < 3:
+                    late_movers.append(a["ticker"])
+                    seen.add(a["ticker"])
+            else:
+                if len(holders) < 3:
+                    holders.append(a["ticker"])
+                    seen.add(a["ticker"])
+
+    else:  # RANGE / CHOP — no propagation thesis, just split the tape
+        for a in candidates:
+            t = a["ticker"]
+            if t in seen:
+                continue
+            if a["sentiment"] == "BEARISH" and len(first_to_move) < 2:
+                first_to_move.append(t)
+                seen.add(t)
+            elif a["sentiment"] == "BULLISH" and len(holders) < 2:
+                holders.append(t)
+                seen.add(t)
+
+    return {
+        "first_to_move": first_to_move,
+        "holders":       holders,
+        "late_movers":   late_movers,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # GAME PLAN
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -617,16 +739,24 @@ def _build_gameplan(
     bulls: List[Dict[str, Any]],
     bears: List[Dict[str, Any]],
     sector_dynamics: Dict[str, Any],
+    market_structure: Dict[str, List[str]],
 ) -> List[str]:
     plan: List[str] = []
     top_bull = bulls[0]["ticker"] if bulls else None
     top_bear = bears[0]["ticker"] if bears else None
     refined  = bias.get("refined_label", bias["label"])
 
-    top_bear_sector = sector_dynamics.get("top_bear_sector")
-    top_bull_sector = sector_dynamics.get("top_bull_sector")
+    top_bear_sector   = sector_dynamics.get("top_bear_sector")
+    top_bull_sector   = sector_dynamics.get("top_bull_sector")
     bear_sector_label = SECTOR_LABELS.get(top_bear_sector, "") if top_bear_sector else ""
     bull_sector_label = SECTOR_LABELS.get(top_bull_sector, "") if top_bull_sector else ""
+
+    first_to_move = market_structure.get("first_to_move", [])
+    holders       = market_structure.get("holders", [])
+    late_movers   = market_structure.get("late_movers", [])
+
+    def _tickers(lst: List[str]) -> str:
+        return "/".join(f"*{t}*" for t in lst)
 
     # ── PRIMARY ──────────────────────────────────────────────────────────────
     if "BEARISH" in refined:
@@ -651,10 +781,17 @@ def _build_gameplan(
         plan.append("▸ *Primary:* No macro conviction — wait for directional confirmation")
 
     # ── SECONDARY ────────────────────────────────────────────────────────────
-    if "ROTATIONAL DIVERGENCE" in refined and top_bull:
-        bl = f" ({bull_sector_label})" if bull_sector_label else ""
+    if "ROTATIONAL DIVERGENCE" in refined and holders:
+        # Only show sector label if the holders actually belong to that sector
+        holders_in_sector = [t for t in holders if _get_sector(t) == top_bull_sector]
+        bl = f" ({bull_sector_label})" if bull_sector_label and holders_in_sector else ""
         plan.append(
-            f"▸ *Secondary:* Relative strength in *{top_bull}*{bl} — "
+            f"▸ *Secondary:* Relative strength in {_tickers(holders[:2])}{bl} — "
+            "quick longs only, not a macro confirmation"
+        )
+    elif "ROTATIONAL DIVERGENCE" in refined and top_bull:
+        plan.append(
+            f"▸ *Secondary:* Relative strength in *{top_bull}* — "
             "quick longs only, not a macro confirmation"
         )
     elif "HEDGING" in refined and top_bear:
@@ -669,27 +806,57 @@ def _build_gameplan(
                 "trade the spread, not direction"
             )
 
-    # ── EXECUTION ────────────────────────────────────────────────────────────
+    # ── EXECUTION (timing-aware) ──────────────────────────────────────────────
     exec_steps: List[str] = []
 
     if "BEARISH" in refined:
-        if top_bear:
+        if first_to_move:
+            exec_steps.append(
+                f"Short {_tickers(first_to_move)} on breakdown — weak sector leads"
+            )
+        elif top_bear:
             exec_steps.append(f"Wait for breakdown confirmation on *{top_bear}*")
-        exec_steps.append("Avoid chasing index longs while put flow dominates")
-        if "ROTATIONAL DIVERGENCE" in refined and top_bull:
-            exec_steps.append(f"*{top_bull}* for scalp only — not a macro play")
+
+        if holders:
+            exec_steps.append(
+                f"Do NOT short {_tickers(holders)} early — let relative strength exhaust first"
+            )
+        else:
+            exec_steps.append("Avoid chasing index longs while put flow dominates")
+
+        if late_movers:
+            exec_steps.append(
+                f"Fade {_tickers(late_movers)} after they lose relative strength vs index"
+            )
 
     elif "BULLISH" in refined:
-        if top_bull:
+        if first_to_move:
+            exec_steps.append(
+                f"Enter {_tickers(first_to_move)} on first pullback — strong sector leads"
+            )
+        elif top_bull:
             exec_steps.append(f"Enter *{top_bull}* on pullback — not extended move")
-        if "HEDGING" in refined:
+
+        if holders:
+            exec_steps.append(
+                f"Do NOT short {_tickers(holders)} — they resist until macro confirms turn"
+            )
+        elif "HEDGING" in refined:
             exec_steps.append("Stay nimble — institutional hedges signal risk awareness")
         else:
             exec_steps.append("Lean with call flow. Don't force shorts into strength")
 
-    else:
+        if late_movers:
+            exec_steps.append(
+                f"{_tickers(late_movers)} may catch bid later — wait for index to confirm first"
+            )
+
+    else:  # RANGE / CHOP
+        if first_to_move and holders:
+            exec_steps.append(
+                f"Trade the spread: short {_tickers(first_to_move)}, long {_tickers(holders)}"
+            )
         exec_steps.append("Wait for opening range before committing size")
-        exec_steps.append("Trade relative strength vs weakness — no directional assumption")
 
     if exec_steps:
         plan.append("▸ *Execution:*")
@@ -775,10 +942,11 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
 
     bias             = _build_bias(actionable)
     sector_dynamics  = _detect_sector_dynamics(actionable)
+    market_structure = _classify_market_structure(actionable, bias, sector_dynamics)
     top_overall      = _top_overall(actionable, limit=5)
     top_bulls        = _top_bulls(actionable, limit=3)
     top_bears        = _top_bears(actionable, limit=3)
-    plan             = _build_gameplan(bias, top_bulls, top_bears, sector_dynamics)
+    plan             = _build_gameplan(bias, top_bulls, top_bears, sector_dynamics, market_structure)
     quick_read_line  = _build_quick_read_summary(bias, sector_dynamics)
 
     refined_label = bias.get("refined_label", bias["label"])
@@ -825,6 +993,26 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
         lines.append("*Top Bulls*")
         for play in top_bulls:
             lines.append(f"• {_one_line(play)}")
+        lines.append("")
+
+    # ── Market Structure ──────────────────────────────────────────────────────
+    macro_bearish_ms = "BEARISH" in refined_label
+    ms = market_structure
+    if ms["first_to_move"] or ms["holders"] or ms["late_movers"]:
+        lines.append("*Market Structure*")
+        if ms["first_to_move"]:
+            names = ", ".join(f"*{t}*" for t in ms["first_to_move"])
+            icon  = "📉" if macro_bearish_ms else "📈"
+            lbl   = "First to drop" if macro_bearish_ms else "First to pop"
+            lines.append(f"• {icon} *{lbl}:* {names}")
+        if ms["holders"]:
+            names = ", ".join(f"*{t}*" for t in ms["holders"])
+            lbl   = "Holding strength" if macro_bearish_ms else "Lagging shorts"
+            lines.append(f"• 📈 *{lbl}:* {names}")
+        if ms["late_movers"]:
+            names = ", ".join(f"*{t}*" for t in ms["late_movers"])
+            lbl   = "Likely to roll later" if macro_bearish_ms else "Likely to catch bid later"
+            lines.append(f"• ⚠️ *{lbl}:* {names}")
         lines.append("")
 
     # ── Sector Leadership ─────────────────────────────────────────────────────
