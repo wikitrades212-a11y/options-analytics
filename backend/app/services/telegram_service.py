@@ -190,14 +190,71 @@ async def send_alert(contract: OptionContract, bias: str, underlying_price: floa
 
 
 async def send_scan_summary(scan_result: dict) -> None:
-    """Send one message per alert (capped at 10)."""
+    """
+    Build one AI summary message from all scan alerts and send it.
+
+    Happy path:
+      1. Convert OptionContract alert dicts → scorer format
+      2. build_summary_message() → single Markdown summary
+      3. POST to Telegram
+
+    Early exits (no send):
+      - No alerts from scanner
+      - Scorer returns empty string (all flow below SPECULATIVE threshold)
+
+    Fallback:
+      If the scorer raises for any reason, fall back to the original
+      per-alert format so Telegram never goes silent due to scorer bugs.
+    """
+    from app.services.flow_scorer import build_summary_message, contracts_to_scorer_alerts
+
     alerts = scan_result["alerts"]
-    logger.info("send_scan_summary called: %d alerts, telegram_enabled=%s",
-                len(alerts), settings.telegram_enabled)
+    logger.info(
+        "send_scan_summary called: %d alerts, telegram_enabled=%s",
+        len(alerts), settings.telegram_enabled,
+    )
+
     if not alerts:
-        logger.info("No alerts to send.")
+        logger.info("send_scan_summary: no alerts — skipping Telegram send.")
         return
 
+    # ── Happy path: AI summary ────────────────────────────────────────────────
+    try:
+        scorer_alerts = contracts_to_scorer_alerts(alerts)
+        summary = build_summary_message(scorer_alerts)
+
+        if not summary:
+            # Normal operating condition — flow existed but all scored WEAK.
+            # INFO, not WARNING. This is expected during quiet tape.
+            logger.info(
+                "send_scan_summary: scorer returned empty (all flow WEAK or below threshold) "
+                "— no Telegram send. alerts_in=%d",
+                len(alerts),
+            )
+            return
+
+        sent = await _post(summary)
+        log_alerts_to_csv(alerts, telegram_sent=sent)
+        return
+
+    except Exception as exc:
+        # ERROR — scorer raised unexpectedly. The [SCORER FALLBACK] tag makes
+        # this instantly greppable in Railway logs: `grep "SCORER FALLBACK"`.
+        logger.error(
+            "[SCORER FALLBACK] flow_scorer raised — sending raw alerts instead. "
+            "alerts=%d  error=%s",
+            len(alerts),
+            exc,
+            exc_info=True,
+        )
+
+    # ── Fallback: original per-alert format ───────────────────────────────────
+    # Reached only when the scorer raised above. Sends up to 10 individual
+    # alerts so Telegram is never silenced by a scorer bug.
+    logger.warning(
+        "[SCORER FALLBACK] sending %d raw alert(s) — fix scorer to restore AI summaries.",
+        len(alerts),
+    )
     for alert in alerts[:10]:
         if alert.get("cluster_count", 1) > 1:
             text = format_cluster_alert(alert)

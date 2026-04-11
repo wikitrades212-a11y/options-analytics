@@ -9,9 +9,11 @@ Quality gate (Telegram):
   contract_class == "actionable"
   conviction_grade A  OR  (conviction_grade B AND conviction_score >= 60)
 
-Cooldown:
-  Same contract (ticker + expiry + type + strike) is suppressed for
+Cooldown (persistent SQLite):
+  Same contract (ticker + expiry + type + strike + direction) is suppressed for
   COOLDOWN_MINUTES unless unusual_score or premium changes materially.
+  Direction is normalized (BULLISH/BEARISH/HEDGE/SPECULATIVE) so tag-driven
+  intensity changes don't bypass cooldown. Stored in dedup.db — survives restarts.
 
 Cluster grouping:
   Multiple alerts with same ticker + expiry + option_type are merged into
@@ -19,7 +21,11 @@ Cluster grouping:
 """
 import asyncio
 import logging
+import os
+import sqlite3
+import time
 from datetime import datetime, time as dtime, timedelta
+from pathlib import Path
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -35,42 +41,137 @@ logger = logging.getLogger(__name__)
 _last_result: Optional[dict] = None
 _scheduler_task: Optional[asyncio.Task] = None
 
-# ── Cooldown ──────────────────────────────────────────────────────────────────
-COOLDOWN_MINUTES      = 60     # suppress same contract for 60 min
-COOLDOWN_SCORE_DELTA  = 10.0   # resend if score changes by this many points
-COOLDOWN_PREMIUM_PCT  = 0.25   # resend if premium changes by 25%+
+# ── Persistent cooldown (SQLite) ───────────────────────────────────────────────
+#
+# Replaces the in-memory dict so cooldown survives process restarts and
+# hot-reloads. Set DEDUP_DB_PATH to an absolute path on a persistent volume
+# (e.g. a Railway volume mount) for full cross-deploy persistence.
+#
+COOLDOWN_MINUTES     = 60     # suppress same contract for 60 min
+COOLDOWN_SCORE_DELTA = 10.0   # resend if score changes by this many points
+COOLDOWN_PREMIUM_PCT = 0.25   # resend if premium changes by 25%+
 
-# key: "{ticker}:{expiry}:{type}:{strike}" → {last_sent, score, premium}
-_cooldown: dict[str, dict] = {}
+_DEDUP_DB_ENV = os.getenv("DEDUP_DB_PATH", "")
+if _DEDUP_DB_ENV:
+    _DB_PATH = Path(_DEDUP_DB_ENV).resolve()
+else:
+    _DB_PATH = Path("./dedup.db").resolve()
+    # Emit at module-load time so it appears in startup logs. On Railway this
+    # means cooldown state is lost on every redeploy. Mount a volume and set
+    # DEDUP_DB_PATH=/data/dedup.db (or equivalent) for true persistence.
+    import warnings
+    warnings.warn(
+        "DEDUP_DB_PATH is not set — using ephemeral path ./dedup.db. "
+        "Cooldown state will be lost on redeploy. "
+        "Set DEDUP_DB_PATH to a path on a Railway persistent volume "
+        "(e.g. DEDUP_DB_PATH=/data/dedup.db) to fix this.",
+        RuntimeWarning,
+        stacklevel=1,
+    )
 
 
-def _cooldown_key(c: OptionContract) -> str:
-    return f"{c.ticker}:{c.expiration}:{c.option_type}:{c.strike:.0f}"
+def _db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS alert_cooldown (
+            key          TEXT PRIMARY KEY,
+            last_sent_ts REAL NOT NULL,
+            score        REAL NOT NULL DEFAULT 0,
+            premium      REAL NOT NULL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    return conn
 
 
-def _is_cooled(c: OptionContract) -> bool:
-    """Return True if this contract is still within its cooldown window."""
-    key = _cooldown_key(c)
-    if key not in _cooldown:
+def _normalize_direction(bias: str) -> str:
+    """
+    Collapse the raw bias string down to its core direction for use in the
+    cooldown key.  We intentionally ignore intensity (AGGRESSIVE) because
+    that is tag-driven and can fluctuate between scans for the same contract.
+    Using the full bias string would let the same contract slip through the
+    cooldown just because a tag like "High Vol/OI" appeared or disappeared.
+
+    Direction is what matters:
+      BULLISH AGGRESSIVE  → BULLISH
+      BEARISH AGGRESSIVE  → BEARISH
+      HEDGE / PROTECTION  → HEDGE
+      SPECULATIVE         → SPECULATIVE
+      anything else       → NEUTRAL
+    """
+    b = bias.upper()
+    if "BULLISH" in b:   return "BULLISH"
+    if "BEARISH" in b:   return "BEARISH"
+    if "HEDGE" in b:     return "HEDGE"
+    if "SPECULATIVE" in b: return "SPECULATIVE"
+    return "NEUTRAL"
+
+
+def _cooldown_key(c: OptionContract, sentiment: str) -> str:
+    """
+    Persistent dedup key.
+    Direction is normalized so intensity fluctuations (BEARISH vs BEARISH
+    AGGRESSIVE) do not bypass cooldown. A genuine directional flip
+    (BULLISH → BEARISH) still produces a different key and will resend.
+    """
+    direction = _normalize_direction(sentiment)
+    return f"{c.ticker}:{c.expiration}:{c.option_type}:{c.strike:.0f}:{direction}"
+
+
+def _is_cooled(c: OptionContract, sentiment: str) -> bool:
+    """Return True if this contract+sentiment is still within its cooldown window."""
+    key    = _cooldown_key(c, sentiment)
+    cutoff = time.time() - COOLDOWN_MINUTES * 60
+    try:
+        with _db_connect() as conn:
+            row = conn.execute(
+                "SELECT last_sent_ts, score, premium FROM alert_cooldown WHERE key = ?",
+                (key,),
+            ).fetchone()
+    except Exception as exc:
+        logger.warning("cooldown DB read error (treating as not cooled): %s", exc)
         return False
-    entry = _cooldown[key]
-    elapsed_min = (datetime.utcnow() - entry["last_sent"]).total_seconds() / 60
-    if elapsed_min >= COOLDOWN_MINUTES:
+
+    if row is None:
         return False
-    # Allow resend on material score or premium change
-    score_change   = abs(c.unusual_score - entry["score"])
-    premium_change = abs(c.vol_notional - entry["premium"]) / max(entry["premium"], 1)
-    if score_change >= COOLDOWN_SCORE_DELTA or premium_change >= COOLDOWN_PREMIUM_PCT:
+
+    last_sent_ts, prev_score, prev_premium = row
+    if last_sent_ts < cutoff:
+        return False  # TTL expired — allow resend
+
+    # Allow resend on material score or premium change even within TTL
+    if abs(c.unusual_score - prev_score) >= COOLDOWN_SCORE_DELTA:
         return False
+    if abs(c.vol_notional - prev_premium) / max(prev_premium, 1) >= COOLDOWN_PREMIUM_PCT:
+        return False
+
     return True
 
 
-def _mark_sent(c: OptionContract) -> None:
-    _cooldown[_cooldown_key(c)] = {
-        "last_sent": datetime.utcnow(),
-        "score":     c.unusual_score,
-        "premium":   c.vol_notional,
-    }
+def _mark_sent(c: OptionContract, sentiment: str) -> None:
+    key = _cooldown_key(c, sentiment)
+    try:
+        with _db_connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_cooldown (key, last_sent_ts, score, premium)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    last_sent_ts = excluded.last_sent_ts,
+                    score        = excluded.score,
+                    premium      = excluded.premium
+                """,
+                (key, time.time(), c.unusual_score, c.vol_notional),
+            )
+            conn.commit()
+            # Prune entries older than 2× TTL to keep the DB small
+            conn.execute(
+                "DELETE FROM alert_cooldown WHERE last_sent_ts < ?",
+                (time.time() - COOLDOWN_MINUTES * 60 * 2,),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.warning("cooldown DB write error (alert will not be throttled): %s", exc)
 
 
 # ── Quality gate ──────────────────────────────────────────────────────────────
@@ -220,9 +321,9 @@ async def run_scan() -> dict:
     alerts.sort(key=lambda a: a["contract"].unusual_score, reverse=True)
     alerts = alerts[:FINAL_CAP]
 
-    # Apply cooldown filter
+    # Apply cooldown filter (persistent SQLite — survives restarts)
     alerts_before_cooldown = len(alerts)
-    alerts = [a for a in alerts if not _is_cooled(a["contract"])]
+    alerts = [a for a in alerts if not _is_cooled(a["contract"], a["bias"])]
     logger.info(
         "run_scan cooldown: %d → %d (suppressed %d)",
         alerts_before_cooldown, len(alerts),
@@ -232,9 +333,9 @@ async def run_scan() -> dict:
     # Group duplicate strike clusters
     alerts = _group_alerts(alerts)
 
-    # Mark all surviving contracts as sent
+    # Mark all surviving contracts as sent (written to SQLite)
     for a in alerts:
-        _mark_sent(a["contract"])
+        _mark_sent(a["contract"], a["bias"])
 
     logger.info("run_scan DONE: %d final alerts", len(alerts))
 
