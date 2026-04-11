@@ -10,12 +10,34 @@ Output: formatted Markdown string ready for Telegram
 """
 
 import math
+from collections import defaultdict
 from datetime import date
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Macro/index instruments — weighted differently in bias calculation
 INDEX_TICKERS: Set[str] = {
     "SPY", "QQQ", "IWM", "DIA", "VXX", "SQQQ", "TQQQ", "SH", "PSQ",
+}
+
+# Sector groupings — used for leadership detection and Quick Read.
+# Rule: put tickers where they TRADE, not where they technically belong.
+# TSLA trades like momentum/high-beta, not stable big-tech.
+SECTOR_MAP: Dict[str, Set[str]] = {
+    "semis":      {"NVDA", "AMD", "INTC", "AVGO", "QCOM", "MU", "AMAT", "LRCX", "KLAC", "MRVL", "TSM", "SMCI"},
+    "big_tech":   {"MSFT", "AAPL", "GOOGL", "META", "AMZN", "NFLX", "CRM", "ORCL", "ADBE", "NOW"},
+    "momentum":   {"PLTR", "TSLA", "SNOW", "COIN", "MSTR", "DKNG", "HOOD", "RBLX", "UBER", "RDDT", "APP"},
+    "financials": {"JPM", "GS", "MS", "BAC", "C", "WFC", "V", "MA", "AXP", "BLK"},
+    "energy":     {"XOM", "CVX", "COP", "OXY", "SLB", "HAL"},
+    "healthcare": {"UNH", "JNJ", "PFE", "MRNA", "ABBV", "LLY", "BMY", "AMGN"},
+}
+
+SECTOR_LABELS: Dict[str, str] = {
+    "semis":      "Semis",
+    "big_tech":   "Big Tech",
+    "momentum":   "Momentum",
+    "financials": "Financials",
+    "energy":     "Energy",
+    "healthcare": "Healthcare",
 }
 
 
@@ -232,6 +254,55 @@ def _is_likely_hedge(
     if trade_type != "PUT":
         return False
     return premium >= 5_000_000 and abs(delta) >= 0.35 and dte <= 21
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SECTOR DETECTION
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _get_sector(ticker: str) -> Optional[str]:
+    for sector, members in SECTOR_MAP.items():
+        if ticker in members:
+            return sector
+    return None
+
+
+def _detect_sector_dynamics(analyzed: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    For non-index tickers with non-WEAK flow, aggregate scores by sector.
+    Returns dominant bear/bull sectors and per-sector ticker lists.
+    """
+    bear_score: Dict[str, float] = defaultdict(float)
+    bull_score: Dict[str, float] = defaultdict(float)
+    bear_tickers: Dict[str, List[str]] = defaultdict(list)
+    bull_tickers: Dict[str, List[str]] = defaultdict(list)
+
+    for a in analyzed:
+        if a["strength"] == "WEAK" or a["is_index"]:
+            continue
+        sector = _get_sector(a["ticker"])
+        if sector is None:
+            continue
+        if a["sentiment"] == "BEARISH":
+            bear_score[sector] += a["model_score"]
+            if a["ticker"] not in bear_tickers[sector]:
+                bear_tickers[sector].append(a["ticker"])
+        elif a["sentiment"] == "BULLISH":
+            bull_score[sector] += a["model_score"]
+            if a["ticker"] not in bull_tickers[sector]:
+                bull_tickers[sector].append(a["ticker"])
+
+    top_bear = max(bear_score, key=bear_score.__getitem__) if bear_score else None
+    top_bull = max(bull_score, key=bull_score.__getitem__) if bull_score else None
+
+    return {
+        "top_bear_sector":      top_bear,
+        "top_bull_sector":      top_bull,
+        "bear_tickers":         dict(bear_tickers),
+        "bull_tickers":         dict(bull_tickers),
+        "bear_score_by_sector": dict(bear_score),
+        "bull_score_by_sector": dict(bull_score),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -458,17 +529,78 @@ def _build_bias(analyzed: List[Dict[str, Any]]) -> Dict[str, Any]:
         (macro_bears and single_bulls) or (macro_bulls and single_bears)
     )
 
+    # Macro override: only fires when BOTH primary index (SPY/QQQ) AND a major
+    # sector (semis) are STRONG/INSTITUTIONAL in the same direction.
+    # Weak or speculative signals do not qualify — they stay as rotational/divergent.
+    _PRIMARY = {"SPY", "QQQ"}
+    _primary_bear = any(
+        a["ticker"] in _PRIMARY and a["sentiment"] == "BEARISH"
+        and a["strength"] in ("INSTITUTIONAL", "STRONG") and not a["is_hedge"]
+        for a in analyzed
+    )
+    _primary_bull = any(
+        a["ticker"] in _PRIMARY and a["sentiment"] == "BULLISH"
+        and a["strength"] in ("INSTITUTIONAL", "STRONG")
+        for a in analyzed
+    )
+    _semis_bear = any(
+        a["ticker"] in SECTOR_MAP["semis"] and a["sentiment"] == "BEARISH"
+        and a["strength"] in ("INSTITUTIONAL", "STRONG")
+        for a in analyzed
+    )
+    _semis_bull = any(
+        a["ticker"] in SECTOR_MAP["semis"] and a["sentiment"] == "BULLISH"
+        and a["strength"] in ("INSTITUTIONAL", "STRONG")
+        for a in analyzed
+    )
+    macro_override_bear = _primary_bear and _semis_bear
+    macro_override_bull = _primary_bull and _semis_bull
+    macro_override = macro_override_bear or macro_override_bull
+
+    if macro_override_bear and label in ("MIXED", "BULLISH"):
+        label = "BEARISH"
+    elif macro_override_bull and label in ("MIXED", "BEARISH"):
+        label = "BULLISH"
+
+    # Refined second-layer bias label
+    index_bearish = bool(macro_bears)
+    index_bullish = bool(macro_bulls)
+    has_strong_single_bulls = bool(single_bulls)
+    has_strong_puts = bool(hedge_names) or bool(single_bears)
+
+    if label == "BEARISH":
+        if has_strong_single_bulls:
+            refined_label = "BEARISH WITH ROTATIONAL DIVERGENCE"
+        else:
+            refined_label = "BEARISH"
+    elif label == "BULLISH":
+        if has_strong_puts:
+            refined_label = "BULLISH WITH HEDGING"
+        else:
+            refined_label = "BULLISH"
+    else:  # MIXED
+        if index_bearish and has_strong_single_bulls:
+            refined_label = "BEARISH WITH ROTATIONAL DIVERGENCE"
+        elif index_bullish and has_strong_puts:
+            refined_label = "BULLISH WITH HEDGING"
+        else:
+            refined_label = "RANGE / CHOP"
+
     return {
-        "label":       label,
-        "bull_score":  round(bull_score, 1),
-        "bear_score":  round(bear_score, 1),
-        "bull_pct":    bull_pct,
-        "bear_pct":    100 - bull_pct,
-        "confidence":  confidence,
-        "bull_names":  bull_names,
-        "bear_names":  bear_names,
-        "hedge_names": hedge_names,
-        "divergent":   divergent,
+        "label":          label,
+        "refined_label":  refined_label,
+        "bull_score":     round(bull_score, 1),
+        "bear_score":     round(bear_score, 1),
+        "bull_pct":       bull_pct,
+        "bear_pct":       100 - bull_pct,
+        "confidence":     confidence,
+        "bull_names":     bull_names,
+        "bear_names":     bear_names,
+        "hedge_names":    hedge_names,
+        "divergent":      divergent,
+        "index_bearish":  index_bearish,
+        "index_bullish":  index_bullish,
+        "macro_override": macro_override,
     }
 
 
@@ -480,53 +612,85 @@ def _build_gameplan(
     bias: Dict[str, Any],
     bulls: List[Dict[str, Any]],
     bears: List[Dict[str, Any]],
+    sector_dynamics: Dict[str, Any],
 ) -> List[str]:
-    plan = []
+    plan: List[str] = []
     top_bull = bulls[0]["ticker"] if bulls else None
     top_bear = bears[0]["ticker"] if bears else None
+    refined  = bias.get("refined_label", bias["label"])
 
-    if bias.get("divergent"):
-        plan.append(
-            "DIVERGENT TAPE — index flow conflicts with single-name flow. "
-            "Reduce size. Wait for price confirmation before committing."
-        )
-        if top_bear:
-            plan.append(
-                f"Downside leader: *{top_bear}* — enter on confirmed breakdown only."
-            )
-        if top_bull:
-            plan.append(
-                f"Upside leader: *{top_bull}* — watch for relative strength hold on macro dip."
-            )
-        return plan
+    top_bear_sector = sector_dynamics.get("top_bear_sector")
+    top_bull_sector = sector_dynamics.get("top_bull_sector")
+    bear_sector_label = SECTOR_LABELS.get(top_bear_sector, "") if top_bear_sector else ""
+    bull_sector_label = SECTOR_LABELS.get(top_bull_sector, "") if top_bull_sector else ""
 
-    if bias["hedge_names"]:
-        hedge_str = " + ".join(set(bias["hedge_names"]))
-        plan.append(
-            f"{hedge_str} put flow is likely portfolio protection — not a pure directional bet."
-        )
+    # ── PRIMARY ──────────────────────────────────────────────────────────────
+    if "BEARISH" in refined:
+        if bear_sector_label and top_bear:
+            macro_ctx = f"{bear_sector_label} + index pressure"
+        elif top_bear:
+            macro_ctx = f"macro pressure via *{top_bear}*"
+        else:
+            macro_ctx = "dominant put flow"
+        plan.append(f"▸ *Primary:* Sell strength — {macro_ctx}")
 
-    if bias["label"] == "BEARISH":
-        plan.append(f"Open weak → downside continuation via *{top_bear or 'top bear'}*.")
-        if top_bull:
-            plan.append(
-                f"Index stabilizes → *{top_bull}* as relative strength play, not macro confirmation."
-            )
-        plan.append("Don't chase green candles while directional put flow dominates.")
-
-    elif bias["label"] == "BULLISH":
-        plan.append(f"Open strong → upside continuation via *{top_bull or 'top bull'}*.")
-        if top_bear:
-            plan.append(f"Rally stalls → *{top_bear}* for reversal / failed-bounce setup.")
-        plan.append("Lean with strength. Don't force shorts into dominant call flow.")
+    elif "BULLISH" in refined:
+        if bull_sector_label and top_bull:
+            macro_ctx = f"{bull_sector_label} + index bid"
+        elif top_bull:
+            macro_ctx = f"upside momentum via *{top_bull}*"
+        else:
+            macro_ctx = "dominant call flow"
+        plan.append(f"▸ *Primary:* Buy dips — {macro_ctx}")
 
     else:
-        if top_bear and top_bull:
+        plan.append("▸ *Primary:* No macro conviction — wait for directional confirmation")
+
+    # ── SECONDARY ────────────────────────────────────────────────────────────
+    if "ROTATIONAL DIVERGENCE" in refined and top_bull:
+        bl = f" ({bull_sector_label})" if bull_sector_label else ""
+        plan.append(
+            f"▸ *Secondary:* Relative strength in *{top_bull}*{bl} — "
+            "quick longs only, not a macro confirmation"
+        )
+    elif "HEDGING" in refined and top_bear:
+        plan.append(
+            f"▸ *Secondary:* Hedge pressure via *{top_bear}* — "
+            "confirm index hold before chasing upside"
+        )
+    elif refined == "RANGE / CHOP":
+        if top_bull and top_bear:
             plan.append(
-                f"Mixed tape: *{top_bear}* = downside leader, *{top_bull}* = upside leader."
+                f"▸ *Secondary:* *{top_bull}* = upside leader, *{top_bear}* = downside leader — "
+                "trade the spread, not direction"
             )
-        plan.append("Trade relative strength vs weakness. Don't assume index direction.")
-        plan.append("Wait for opening range before committing size.")
+
+    # ── EXECUTION ────────────────────────────────────────────────────────────
+    exec_steps: List[str] = []
+
+    if "BEARISH" in refined:
+        if top_bear:
+            exec_steps.append(f"Wait for breakdown confirmation on *{top_bear}*")
+        exec_steps.append("Avoid chasing index longs while put flow dominates")
+        if "ROTATIONAL DIVERGENCE" in refined and top_bull:
+            exec_steps.append(f"*{top_bull}* for scalp only — not a macro play")
+
+    elif "BULLISH" in refined:
+        if top_bull:
+            exec_steps.append(f"Enter *{top_bull}* on pullback — not extended move")
+        if "HEDGING" in refined:
+            exec_steps.append("Stay nimble — institutional hedges signal risk awareness")
+        else:
+            exec_steps.append("Lean with call flow. Don't force shorts into strength")
+
+    else:
+        exec_steps.append("Wait for opening range before committing size")
+        exec_steps.append("Trade relative strength vs weakness — no directional assumption")
+
+    if exec_steps:
+        plan.append("▸ *Execution:*")
+        for step in exec_steps:
+            plan.append(f"  — {step}")
 
     return plan
 
@@ -550,6 +714,41 @@ def _one_line(a: Dict[str, Any]) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# QUICK READ ONE-LINER
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_quick_read_summary(
+    bias: Dict[str, Any],
+    sector_dynamics: Dict[str, Any],
+) -> str:
+    """
+    Generate a one-line human-readable tape description.
+    Example: "Index hedging + semiconductor weakness + selective tech strength"
+    """
+    parts: List[str] = []
+
+    if bias.get("hedge_names"):
+        parts.append("index hedging")
+
+    top_bear = sector_dynamics.get("top_bear_sector")
+    top_bull = sector_dynamics.get("top_bull_sector")
+
+    if top_bear:
+        parts.append(f"{SECTOR_LABELS.get(top_bear, top_bear).lower()} weakness")
+
+    if top_bull and top_bull != top_bear:
+        parts.append(f"selective {SECTOR_LABELS.get(top_bull, top_bull).lower()} strength")
+    elif not top_bull and bias.get("bull_names"):
+        parts.append("isolated long-side flow")
+
+    if not parts:
+        # Fall back to a plain description of the refined label
+        return bias.get("refined_label", bias["label"]).replace("_", " ").lower()
+
+    return " + ".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # PUBLIC ENTRY POINT
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -570,56 +769,93 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
     if not actionable:
         return ""
 
-    bias        = _build_bias(actionable)
-    top_overall = _top_overall(actionable, limit=5)
-    top_bulls   = _top_bulls(actionable, limit=3)
-    top_bears   = _top_bears(actionable, limit=3)
-    plan        = _build_gameplan(bias, top_bulls, top_bears)
+    bias             = _build_bias(actionable)
+    sector_dynamics  = _detect_sector_dynamics(actionable)
+    top_overall      = _top_overall(actionable, limit=5)
+    top_bulls        = _top_bulls(actionable, limit=3)
+    top_bears        = _top_bears(actionable, limit=3)
+    plan             = _build_gameplan(bias, top_bulls, top_bears, sector_dynamics)
+    quick_read_line  = _build_quick_read_summary(bias, sector_dynamics)
 
-    bias_emoji = {"BULLISH": "🟢", "BEARISH": "🔴"}.get(bias["label"], "🟡")
-    div_tag    = " ⚡DIVERGENT" if bias["divergent"] else ""
+    refined_label = bias.get("refined_label", bias["label"])
+    bias_emoji    = {"BULLISH": "🟢", "BEARISH": "🔴"}.get(bias["label"], "🟡")
+    override_tag  = " ⚠️MACRO OVERRIDE" if bias.get("macro_override") else ""
+
+    # Leader tickers for header emphasis
+    downside_leader = top_bears[0]["ticker"] if top_bears else None
+    upside_leader   = top_bulls[0]["ticker"] if top_bulls else None
 
     lines: List[str] = []
 
-    # Header
-    lines.append(f"{bias_emoji} *MARKET BIAS: {bias['label']}{div_tag}*")
+    # ── Header ───────────────────────────────────────────────────────────────
+    lines.append(f"{bias_emoji} *MARKET BIAS: {refined_label}{override_tag}*")
     lines.append(
-        f"Bull {bias['bull_pct']}% vs Bear {bias['bear_pct']}%  "
+        f"Bear {bias['bear_pct']}% vs Bull {bias['bull_pct']}%  "
         f"|  Confidence: {bias['confidence']}/100"
     )
+    leader_parts = []
+    if downside_leader:
+        leader_parts.append(f"📉 *{downside_leader}*")
+    if upside_leader:
+        leader_parts.append(f"📈 *{upside_leader}*")
+    if leader_parts:
+        lines.append("  ".join(leader_parts))
     lines.append("")
 
-    # Top Overall
+    # ── Top Overall ──────────────────────────────────────────────────────────
     if top_overall:
         lines.append("*Top Overall Flow*")
         for i, play in enumerate(top_overall, start=1):
             lines.append(f"{i}. {_one_line(play)}")
         lines.append("")
 
-    # Top Bears
+    # ── Top Bears ────────────────────────────────────────────────────────────
     if top_bears:
         lines.append("*Top Bears*")
         for play in top_bears:
             lines.append(f"• {_one_line(play)}")
         lines.append("")
 
-    # Top Bulls
+    # ── Top Bulls ────────────────────────────────────────────────────────────
     if top_bulls:
         lines.append("*Top Bulls*")
         for play in top_bulls:
             lines.append(f"• {_one_line(play)}")
         lines.append("")
 
-    # Game Plan
+    # ── Sector Leadership ─────────────────────────────────────────────────────
+    sector_lines: List[str] = []
+    top_bear_s = sector_dynamics.get("top_bear_sector")
+    top_bull_s = sector_dynamics.get("top_bull_sector")
+    if top_bear_s:
+        tickers_str = ", ".join(sector_dynamics["bear_tickers"].get(top_bear_s, []))
+        lbl = SECTOR_LABELS.get(top_bear_s, top_bear_s)
+        sector_lines.append(f"📉 *{lbl} weak* — {tickers_str}")
+    if top_bull_s and top_bull_s != top_bear_s:
+        tickers_str = ", ".join(sector_dynamics["bull_tickers"].get(top_bull_s, []))
+        lbl = SECTOR_LABELS.get(top_bull_s, top_bull_s)
+        sector_lines.append(f"📈 *{lbl} strong* — {tickers_str}")
+    elif top_bull_s == top_bear_s and top_bull_s:
+        sector_lines.append(
+            f"⚡ *{SECTOR_LABELS.get(top_bull_s, top_bull_s)} split* — mixed flow within sector"
+        )
+    if sector_lines:
+        lines.append("*Sector Leadership*")
+        for sl in sector_lines:
+            lines.append(f"• {sl}")
+        lines.append("")
+
+    # ── Game Plan ─────────────────────────────────────────────────────────────
     if plan:
         lines.append("*Game Plan*")
         for step in plan:
-            lines.append(f"• {step}")
+            lines.append(step)
         lines.append("")
 
-    # Quick Read
+    # ── Quick Read ────────────────────────────────────────────────────────────
     if top_overall:
         lines.append("*Quick Read*")
+        lines.append(f'"{quick_read_line}"')
         for play in top_overall[:3]:
             lines.append(f"• *{play['ticker']}* → {play['note']}")
 
