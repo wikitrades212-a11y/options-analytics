@@ -243,15 +243,19 @@ def _classify_strength(model_score: float) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _is_likely_hedge(
-    ticker: str, trade_type: str, delta: float, dte: int, premium: float
+    ticker: str, trade_type: str, delta: float, dte: int, premium: float,
+    vol_oi: float = 0.0,
 ) -> bool:
     """
-    Index ETF put + large premium + near-ATM + short-dated = portfolio
-    protection, not a directional bet. Discounted in bias but still shown.
+    Index ETF put + large premium + near-ATM + short-dated = portfolio protection.
+    Exception: high Vol/OI (> 20x) means fresh aggressive positioning, not a hedge —
+    a real hedge rides existing OI, it doesn't blast 20-100x over it.
     """
     if ticker not in INDEX_TICKERS:
         return False
     if trade_type != "PUT":
+        return False
+    if vol_oi > 20.0:
         return False
     return premium >= 5_000_000 and abs(delta) >= 0.35 and dte <= 21
 
@@ -358,7 +362,7 @@ def analyze_alert(alert: Dict[str, Any]) -> Dict[str, Any]:
     ), 2)
 
     strength = _classify_strength(model_score)
-    is_hedge = _is_likely_hedge(ticker, trade_type, delta, dte, premium)
+    is_hedge = _is_likely_hedge(ticker, trade_type, delta, dte, premium, vol_oi)
     is_index = ticker in INDEX_TICKERS
 
     emoji = {"BULLISH": "🟢", "BEARISH": "🔴"}.get(sentiment, "⚪")
