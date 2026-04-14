@@ -19,6 +19,10 @@ _REPORT_TIME = dtime(18, 0)  # 6:00 PM ET
 
 _futures_scheduler_task: Optional[asyncio.Task] = None
 
+_FIRST_RETRY = 20   # seconds before first retry
+_RETRY_EVERY = 30   # seconds between subsequent retries
+_TIMEOUT     = 300  # seconds before giving up
+
 
 # ── Schedule helper ───────────────────────────────────────────────────────────
 
@@ -53,14 +57,11 @@ def _next_sunday_report_dt() -> datetime:
 def _sync_fetch_gap_data(symbol: str) -> Optional[dict]:
     """
     Synchronous fetch (runs in thread executor).
-    Returns Friday OHLC + Sunday reopen for the given continuous futures symbol.
+    Returns Friday OHLC only. Session open is handled separately.
     """
     import yfinance as yf  # noqa: PLC0415
 
-    ticker = yf.Ticker(symbol)
-
-    # Daily bars to find last Friday's OHLC
-    daily = ticker.history(period="7d", interval="1d")
+    daily = yf.Ticker(symbol).history(period="7d", interval="1d")
     if daily.empty:
         return None
 
@@ -70,27 +71,81 @@ def _sync_fetch_gap_data(symbol: str) -> Optional[dict]:
         return None
 
     friday_row = fridays.iloc[-1]
-
-    # Current-session intraday (Sunday reopen)
-    intraday = ticker.history(period="1d", interval="1m")
-    if intraday.empty:
-        logger.warning(f"{symbol}: no intraday data for today")
-        return None
-
     return {
         "symbol":       symbol,
         "friday_close": float(friday_row["Close"]),
         "friday_high":  float(friday_row["High"]),
         "friday_low":   float(friday_row["Low"]),
-        "reopen":       float(intraday.iloc[0]["Open"]),
-        "current":      float(intraday.iloc[-1]["Close"]),
     }
 
 
-async def _fetch_gap_data(symbol: str) -> Optional[dict]:
-    loop = asyncio.get_event_loop()
+def _sync_fetch_first_session_bar(symbol: str, session_start: datetime) -> Optional[float]:
+    """
+    Fetch 1-minute bars from session_start onward via explicit start/end window.
+    Returns the open of the first valid bar, or None if no bars exist yet.
+    Runs in thread executor.
+    """
+    import yfinance as yf  # noqa: PLC0415
+
+    end = datetime.now(_ET) + timedelta(minutes=5)
+    df  = yf.Ticker(symbol).history(
+        start=session_start, end=end, interval="1m", prepost=True
+    )
+    if df.empty:
+        return None
+
+    if df.index.tzinfo is None:
+        df.index = df.index.tz_localize("UTC").tz_convert(_ET)
+    else:
+        df.index = df.index.tz_convert(_ET)
+
+    df = df[df.index >= session_start].sort_index()
+    if df.empty:
+        return None
+
+    return float(df.iloc[0]["Open"])
+
+
+async def _safe_session_open(symbol: str, session_start: datetime) -> Optional[float]:
+    """
+    Retry fetching the first new-session bar open until data appears or timeout.
+    Returns None on timeout — caller posts unavailable message.
+    """
+    loop    = asyncio.get_event_loop()
+    start   = datetime.now(_ET)
+    attempt = 0
+    delay   = _FIRST_RETRY
+
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return await loop.run_in_executor(pool, _sync_fetch_gap_data, symbol)
+        while True:
+            elapsed = (datetime.now(_ET) - start).total_seconds()
+
+            if elapsed >= _TIMEOUT:
+                logger.warning(
+                    "%s: session open timeout after %d attempts (%.0fs elapsed)",
+                    symbol, attempt, elapsed,
+                )
+                return None
+
+            open_price = await loop.run_in_executor(
+                pool, _sync_fetch_first_session_bar, symbol, session_start
+            )
+            attempt += 1
+
+            if open_price is not None:
+                logger.info(
+                    "%s: session open bar found | attempt=%d | open=%.2f",
+                    symbol, attempt, open_price,
+                )
+                return open_price
+
+            if attempt == 1:
+                logger.info(
+                    "%s: waiting for session open bar — retry in %ds", symbol, delay
+                )
+
+            await asyncio.sleep(delay)
+            delay = _RETRY_EVERY
 
 
 # ── Gap analysis ──────────────────────────────────────────────────────────────
@@ -169,15 +224,32 @@ async def run_futures_gap_report() -> None:
 
     logger.info("Running Sunday futures gap report…")
 
-    es_raw, nq_raw = await asyncio.gather(
-        _fetch_gap_data("ES=F"),
-        _fetch_gap_data("NQ=F"),
+    # Friday OHLC — stable, no retry needed
+    loop = asyncio.get_event_loop()
+    es_friday, nq_friday = await asyncio.gather(
+        loop.run_in_executor(None, _sync_fetch_gap_data, "ES=F"),
+        loop.run_in_executor(None, _sync_fetch_gap_data, "NQ=F"),
     )
 
-    if es_raw is None or nq_raw is None:
-        logger.warning("Futures data unavailable — skipping report")
+    if es_friday is None or nq_friday is None:
+        logger.warning("Friday OHLC unavailable — skipping report")
         await _post("⚠️ *ES/NQ Futures Gap Report* — data unavailable at 6 PM ET.")
         return
+
+    # Session open — retry up to 5 minutes for first valid bar
+    session_start = datetime.now(_ET).replace(hour=18, minute=0, second=0, microsecond=0)
+    es_open, nq_open = await asyncio.gather(
+        _safe_session_open("ES=F", session_start),
+        _safe_session_open("NQ=F", session_start),
+    )
+
+    if es_open is None or nq_open is None:
+        logger.warning("Session open unavailable after retries — skipping report")
+        await _post("⚠️ *ES/NQ Futures Gap Report* — session open data unavailable.")
+        return
+
+    es_raw = {**es_friday, "reopen": es_open, "current": es_open}
+    nq_raw = {**nq_friday, "reopen": nq_open, "current": nq_open}
 
     es  = _analyze_gap(es_raw)
     nq  = _analyze_gap(nq_raw)

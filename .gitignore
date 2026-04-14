@@ -13,8 +13,13 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+.venv*/
 venv/
 *.egg-info/
+
+# Runtime / local data
+backend/dedup.db
+data/
 
 # Node
 frontend/node_modules/
