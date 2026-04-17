@@ -159,6 +159,7 @@ def format_summary(scan_result: dict) -> str:
 # ── Sender ────────────────────────────────────────────────────────────────────
 
 async def _post(text: str) -> bool:
+    """Send HTML-formatted message. Used by the spread/LHF rail only."""
     if not settings.telegram_enabled:
         logger.warning("Telegram disabled (TELEGRAM_ENABLED=false) — skipping send")
         return False
@@ -186,8 +187,37 @@ async def _post(text: str) -> bool:
         return False
 
 
+async def _post_flow(text: str) -> bool:
+    """Send Markdown-formatted message. Used by the normal flow rail only.
+    Flow scorer (flow_scorer.py) explicitly outputs Markdown — do not change this to HTML.
+    """
+    if not settings.telegram_enabled:
+        return False
+    token   = settings.telegram_bot_token
+    chat_id = settings.telegram_chat_id
+    if not token or not chat_id:
+        return False
+
+    url = _SEND_URL.format(token=token)
+    logger.info("Telegram FLOW POST → chat_id=%s text_len=%d", chat_id, len(text))
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json={
+                "chat_id":                  chat_id,
+                "text":                     text[:4096],
+                "parse_mode":               "Markdown",
+                "disable_web_page_preview": True,
+            })
+            resp.raise_for_status()
+        logger.info("Telegram FLOW POST OK")
+        return True
+    except Exception as exc:
+        logger.error(f"Telegram flow send error: {exc}")
+        return False
+
+
 async def send_alert(contract: OptionContract, bias: str, underlying_price: float) -> bool:
-    return await _post(format_alert(contract, bias, underlying_price))
+    return await _post_flow(format_alert(contract, bias, underlying_price))
 
 
 async def send_scan_summary(scan_result: dict) -> None:
@@ -234,7 +264,7 @@ async def send_scan_summary(scan_result: dict) -> None:
             )
             return
 
-        sent = await _post(summary)
+        sent = await _post_flow(summary)
         log_alerts_to_csv(alerts, telegram_sent=sent)
         return
 
@@ -265,7 +295,7 @@ async def send_scan_summary(scan_result: dict) -> None:
                 alert["bias"],
                 alert["underlying_price"],
             )
-        sent = await _post(text)
+        sent = await _post_flow(text)
         log_alerts_to_csv([alert], telegram_sent=sent)
 
 
