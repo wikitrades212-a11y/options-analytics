@@ -385,11 +385,6 @@ async def _handle_update(update: dict) -> None:
     if not text or not chat_id:
         return
 
-    # Only respond to the configured chat
-    if settings.telegram_chat_id and chat_id != str(settings.telegram_chat_id):
-        logger.debug("bot: ignoring message from chat %s (not authorized)", chat_id)
-        return
-
     if not text.startswith("/"):
         return
 
