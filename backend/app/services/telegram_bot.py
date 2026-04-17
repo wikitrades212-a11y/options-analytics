@@ -347,81 +347,18 @@ async def _cmd_perf(args: list[str], chat_id: str) -> None:
         await _send(chat_id, f"❌ Perf error: {exc}")
 
 
-async def _cmd_winning(args: list[str], chat_id: str) -> None:
-    """Show top HIGH_OPPORTUNITY FBA products from last scan."""
-    try:
-        from app.services.fba_service import get_last_fba_scan, format_fba_summary
-
-        result = get_last_fba_scan()
-        if not result:
-            await _send(chat_id,
-                "⚪ No FBA scan yet.\n\nRun /product to start the first scan."
-            )
-            return
-
-        await _send(chat_id, format_fba_summary(result))
-
-        for p in result.get("high", [])[:3]:
-            from app.services.fba_service import format_fba_alert
-            await _send(chat_id, format_fba_alert(p))
-            await asyncio.sleep(0.3)
-
-    except Exception as exc:
-        await _send(chat_id, f"❌ FBA error: {exc}")
-
-
-async def _cmd_product(args: list[str], chat_id: str) -> None:
-    """Run FBA product scan or look up an ASIN."""
-    try:
-        from app.services.fba_service import (
-            run_fba_scan, get_last_fba_scan, format_fba_summary, format_fba_alert
-        )
-
-        # If arg looks like an ASIN, look it up in cache
-        if args and len(args[0]) == 10 and args[0].upper().isalnum():
-            asin   = args[0].upper()
-            result = get_last_fba_scan()
-            if result:
-                for p in result.get("top_products", []):
-                    if p.get("asin") == asin:
-                        await _send(chat_id, format_fba_alert(p))
-                        return
-            await _send(chat_id, f"⚪ ASIN {asin} not found in last scan.\n\nRun /product to refresh.")
-            return
-
-        await _send(chat_id, "🔄 Running FBA product scan — this may take 30-60 seconds...")
-        result = await run_fba_scan(include_trends=True, min_score=50.0, top_n=15)
-        await _send(chat_id, format_fba_summary(result))
-
-        for p in result.get("high", [])[:5]:
-            await _send(chat_id, format_fba_alert(p))
-            await asyncio.sleep(0.4)
-
-        if not result.get("high"):
-            await _send(chat_id, "⚪ No HIGH_OPPORTUNITY products found. Try /winning for medium-tier.")
-
-    except Exception as exc:
-        logger.error("_cmd_product error: %s", exc, exc_info=True)
-        await _send(chat_id, f"❌ Product scan failed: {exc}")
-
-
 async def _cmd_help(args: list[str], chat_id: str) -> None:
     await _send(chat_id,
-        "🤖 <b>SZ Spread + FBA Bot</b>\n\n"
-        "<b>Options Commands</b>\n"
+        "🤖 <b>Credit Spread Bot</b>\n\n"
         "/scan — run full spread scan now\n"
         "/status — last scan overview\n"
         "/ticker AAPL — analyze one ticker\n"
         "/easy — only LOW HANGING FRUIT setups\n"
         "/rejects — rejected tickers + reasons\n"
         "/summary — full scan narrative\n"
-        "/perf — recent trade performance\n\n"
-        "<b>FBA Commands</b>\n"
-        "/product — run FBA product discovery scan\n"
-        "/winning — show top FBA opportunities\n\n"
+        "/perf — recent trade performance\n"
         "/help — this message\n\n"
-        "<i>Options scans: 8:30 AM + hourly 9:30–4:30 PM ET (weekdays)</i>\n"
-        "<i>FBA scan: 6:00 AM ET daily</i>"
+        "<i>Automatic scans run 8:30 AM + hourly 9:30–4:30 PM ET (weekdays)</i>"
     )
 
 
@@ -435,8 +372,6 @@ _HANDLERS = {
     "rejects": _cmd_rejects,
     "summary": _cmd_summary,
     "perf":    _cmd_perf,
-    "product": _cmd_product,
-    "winning": _cmd_winning,
     "help":    _cmd_help,
     "start":   _cmd_help,
 }

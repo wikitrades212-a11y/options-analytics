@@ -16,10 +16,11 @@ from slowapi.errors import RateLimitExceeded
 from app.config import settings
 from app.routers import options_router, calculator_router, scanner_router, credit_spread_router, fba_router
 from app.providers import provider
-from app.services.scanner_service import start_scheduler, stop_scheduler, start_fba_scheduler, stop_fba_scheduler
+from app.services.scanner_service import start_scheduler, stop_scheduler
 from app.services.futures_service import start_futures_scheduler, stop_futures_scheduler
 from app.services.social_service import start_social_scheduler, stop_social_scheduler
 from app.services.telegram_bot import start_bot, stop_bot
+from app.services.fba_bot import start_fba_bot, stop_fba_bot
 from app.services.spread_tracker import init_tracker
 
 logging.basicConfig(
@@ -56,16 +57,16 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_warmup_provider())
     start_scheduler()
-    start_fba_scheduler()
     start_futures_scheduler()
     start_social_scheduler()
-    start_bot()          # Telegram command bot (long-polling)
+    start_bot()          # options spread bot (long-polling)
+    start_fba_bot()      # FBA product bot (long-polling, separate token)
 
     yield
 
     stop_bot()
+    stop_fba_bot()
     stop_scheduler()
-    stop_fba_scheduler()
     stop_futures_scheduler()
     stop_social_scheduler()
     logger.info("Shutting down.")

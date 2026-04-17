@@ -22,10 +22,14 @@ class Settings(BaseSettings):
     scan_min_volume: int = 250
     scan_top_n: int = 5
 
-    # ── Telegram ──────────────────────────────────────────────────────────────
+    # ── Telegram (options bot) ────────────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     telegram_enabled: bool = True
+
+    # ── Telegram (FBA bot — separate bot token) ───────────────────────────────
+    fba_bot_token: str = ""
+    fba_chat_id: str = ""
 
     # ── Credit Spread / LHF engine ────────────────────────────────────────────
     lhf_min_score: int = 80              # minimum LHF score to classify as LOW_HANGING_FRUIT
