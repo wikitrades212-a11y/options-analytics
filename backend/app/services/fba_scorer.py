@@ -123,22 +123,24 @@ class FBAProduct:
 def _score_demand(bsr_rank: int, bsr_gain_pct: int, interest_score: int, trend: str) -> tuple[float, list[str]]:
     """
     0-25 pts.
-    BSR rank ≤ 50  → 10 pts, ≤ 200 → 7, ≤ 500 → 5, else → 2
+    BSR rank ≤ 25  → 15 pts, ≤ 100 → 12, ≤ 300 → 9, ≤ 500 → 6, else → 3
     Mover gain bonus: >500% → +8, >200% → +6, >100% → +4, >50% → +2
     Trends interest: ≥70 → +5, ≥40 → +3, rising → +2
     """
     pts: float = 0.0
     why: list[str] = []
 
-    # BSR rank
-    if bsr_rank <= 50:
-        pts += 10; why.append(f"Top-50 BSR (#{bsr_rank})")
-    elif bsr_rank <= 200:
-        pts += 7;  why.append(f"Top-200 BSR (#{bsr_rank})")
+    # BSR rank — higher base so products score without needing price/trends data
+    if bsr_rank <= 25:
+        pts += 15; why.append(f"Top-25 BSR (#{bsr_rank})")
+    elif bsr_rank <= 100:
+        pts += 12; why.append(f"Top-100 BSR (#{bsr_rank})")
+    elif bsr_rank <= 300:
+        pts += 9;  why.append(f"Top-300 BSR (#{bsr_rank})")
     elif bsr_rank <= 500:
-        pts += 5;  why.append(f"Top-500 BSR (#{bsr_rank})")
+        pts += 6;  why.append(f"Top-500 BSR (#{bsr_rank})")
     else:
-        pts += 2
+        pts += 3
 
     # Mover velocity
     if bsr_gain_pct > 500:
@@ -188,14 +190,14 @@ def _score_competition(bsr_rank: int, review_count: Optional[int] = None) -> tup
             pts = 3;  why.append(f"Very high reviews ({review_count}) — saturated")
     else:
         # Proxy via BSR rank band
-        if bsr_rank <= 50:
-            pts = 8;  why.append("Top-50 — high competition (price your niche)")
+        if bsr_rank <= 25:
+            pts = 10; why.append("Top-25 — very competitive, needs strong differentiation")
         elif bsr_rank <= 100:
-            pts = 12; why.append("Top-100 — proven market, moderate competition")
-        elif bsr_rank <= 200:
-            pts = 18; why.append("Top-200 — good balance of demand + competition")
+            pts = 14; why.append("Top-100 — proven market, manageable competition")
+        elif bsr_rank <= 300:
+            pts = 18; why.append("Top-300 — good demand/competition balance")
         else:
-            pts = 22; why.append("Rank 200-500 — lower competition zone")
+            pts = 22; why.append("Rank 300-500 — lower competition zone")
 
     return min(pts, 25.0), why
 
@@ -210,7 +212,7 @@ def _score_margin(price: Optional[float]) -> tuple[float, list[str]]:
     flags: list[str] = []
 
     if price is None or price <= 0:
-        return 10.0, ["Price unknown — estimated mid-tier margin"]
+        return 15.0, ["Price unknown — assuming typical FBA margin"]
 
     if price < 12:
         flags.append(f"Price ${price:.2f} too low — FBA fees will crush margin")
@@ -252,7 +254,7 @@ def _score_logistics(price: Optional[float], is_mover: bool) -> tuple[float, lis
     why: list[str] = []
 
     if price is None:
-        pts = 12; why.append("No price data — logistics unknown")
+        pts = 15; why.append("No price data — assuming standard size/weight")
     elif price <= 25:
         pts = 22; why.append("Light/small item likely — low FBA fee tier")
     elif price <= 50:
@@ -304,9 +306,9 @@ def score_product(raw: dict, trends: dict[str, dict] | None = None) -> FBAProduc
     all_flags = [w for w in (d_why + c_why + m_why + l_why) if _is_flag(w)]
 
     total = breakdown.total
-    if total >= 70:
+    if total >= 65:
         classification = "HIGH_OPPORTUNITY"
-    elif total >= 50:
+    elif total >= 45:
         classification = "MEDIUM_OPPORTUNITY"
     else:
         classification = "LOW_OPPORTUNITY"

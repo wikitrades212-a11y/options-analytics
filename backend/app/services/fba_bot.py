@@ -67,7 +67,7 @@ async def _cmd_scan(args: list[str], chat_id: str) -> None:
     try:
         from app.services.fba_service import run_fba_scan, format_fba_summary, format_fba_alert
 
-        result = await run_fba_scan(include_trends=True, min_score=50.0, top_n=15)
+        result = await run_fba_scan(include_trends=True, min_score=40.0, top_n=15)
         await _send(chat_id, format_fba_summary(result))
 
         high = result.get("high", [])
