@@ -28,13 +28,18 @@ CONCURRENCY          = 10   # parallel expiry fetches
 
 
 def _hydrate(raw: dict, underlying_price: float) -> OptionContract:
-    mid = raw.get("mid", 0.0)
+    mid  = raw.get("mid", 0.0)
+    mark = raw.get("mark", 0.0) or 0.0
+    last = raw.get("last", 0.0) or 0.0
+    # Use the best available price for notional calculations so we never
+    # silently drop flow when bid+ask haven't updated but mark/last have.
+    eff_price = mid if mid > 0 else (mark if mark > 0 else last)
     oi  = raw.get("open_interest", 0) or 0
     vol = raw.get("volume", 0) or 0
     return OptionContract(
         **raw,
-        oi_notional      = round(oi  * mid * 100, 2),
-        vol_notional     = round(vol * mid * 100, 2),
+        oi_notional      = round(oi  * eff_price * 100, 2),
+        vol_notional     = round(vol * eff_price * 100, 2),
         vol_oi_ratio     = round(vol / max(oi, 1), 4),
         underlying_price = underlying_price,
         moneyness        = round(raw.get("strike", 0) / underlying_price, 4) if underlying_price else None,

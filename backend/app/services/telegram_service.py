@@ -173,9 +173,10 @@ async def _post(text: str) -> bool:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json={
-                "chat_id":    chat_id,
-                "text":       text,
-                "parse_mode": "Markdown",
+                "chat_id":                  chat_id,
+                "text":                     text[:4096],
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
             })
             resp.raise_for_status()
         logger.info("Telegram POST OK")
@@ -266,3 +267,155 @@ async def send_scan_summary(scan_result: dict) -> None:
             )
         sent = await _post(text)
         log_alerts_to_csv([alert], telegram_sent=sent)
+
+
+# ── Credit Spread + LHF alert formatting (HTML) ───────────────────────────────
+
+def _notional_str(val: float) -> str:
+    if val >= 1_000_000:
+        return f"${val / 1_000_000:.1f}M"
+    if val >= 1_000:
+        return f"${val / 1_000:.0f}K"
+    return f"${val:.0f}"
+
+
+def format_spread_alert(spread) -> str:
+    """
+    Format a CreditSpreadResult (with optional LHF result) as an HTML
+    Telegram message. Switches header style based on LHF classification.
+    """
+    from app.models.credit_spread import CreditSpreadResult
+    s: CreditSpreadResult = spread
+
+    is_put        = "Put" in s.spread_type
+    suffix        = "P" if is_put else "C"
+    lhf           = s.lhf
+    classification = lhf.classification if lhf else "UNKNOWN"
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    if classification == "LOW_HANGING_FRUIT":
+        header = "🍒 <b>LOW HANGING FRUIT</b>"
+    elif classification == "VALID_BUT_NOT_EASY":
+        header = "📊 <b>VALID SETUP</b> (Not Easy)"
+    else:
+        header = "📋 <b>CREDIT SPREAD</b>"
+
+    # ── Strike line ───────────────────────────────────────────────────────────
+    exp_pretty = _fmt_expiry(s.expiration)
+    strike_line = (
+        f"Sell <b>{s.sell_strike:.0f}{suffix}</b> / Buy {s.buy_strike:.0f}{suffix}"
+        f"  •  Exp: {exp_pretty} ({s.dte}d)  •  Δ{s.structure.delta_at_sell:.2f}"
+    )
+
+    # ── Premium block ─────────────────────────────────────────────────────────
+    rr = s.max_risk / s.premium if s.premium > 0 else 0
+    prem_line = (
+        f"💰 Credit: <b>${s.premium:.2f}</b>  |  Risk: ${s.max_risk:.2f}  |  RR: {rr:.1f}:1\n"
+        f"🎯 Win Probability: <b>{s.win_probability:.0f}%</b>"
+    )
+
+    # ── Score block ───────────────────────────────────────────────────────────
+    if lhf:
+        sc = lhf.score
+        score_block = (
+            f"📊 <b>LHF Score: {sc.total}/100</b>\n"
+            f"├ Flow:       {sc.flow_clarity}/25\n"
+            f"├ Structure:  {sc.structure_safety}/25\n"
+            f"├ Regime:     {sc.regime}/20\n"
+            f"├ Premium:    {sc.premium_quality}/10\n"
+            f"└ Edge:       {sc.historical_edge}/20"
+        )
+    else:
+        sc2 = s.score
+        score_block = (
+            f"📊 <b>Score: {sc2.total}/100</b>\n"
+            f"Flow: {sc2.flow_score}/30  |  Structure: {sc2.structure_score}/30\n"
+            f"Probability: {sc2.probability_score}/20  |  Edge: {sc2.historical_score}/20"
+        )
+
+    # ── Flow confirmation ─────────────────────────────────────────────────────
+    voi_str = f"{s.flow.vol_oi_ratio:.1f}x"
+    inst    = any("Big Premium" in t or "Institutional" in t for t in s.flow.tags)
+    flow_block = (
+        f"<b>Flow Confirmation:</b>\n"
+        f"• {s.flow.description}\n"
+        f"• Vol/OI: {voi_str}  ({_notional_str(s.flow.vol_notional)} notional)\n"
+        f"• Grade <b>{s.flow.conviction_grade}</b> conviction"
+        + ("  •  Institutional" if inst else "")
+    )
+
+    # ── Structure context ─────────────────────────────────────────────────────
+    struct_bullets = "\n".join(f"• {n}" for n in s.structure.notes)
+    struct_block   = f"<b>Structure:</b>\n{struct_bullets}"
+
+    # ── Why easy / landmines ──────────────────────────────────────────────────
+    extra = ""
+    if lhf and classification == "LOW_HANGING_FRUIT" and lhf.why_easy:
+        bullets = "\n".join(f"• {w}" for w in lhf.why_easy[:4])
+        extra += f"\n✅ <b>Why it's easy:</b>\n{bullets}"
+
+    if lhf and lhf.landmines:
+        mines = "\n".join(f"• {m}" for m in lhf.landmines[:3])
+        extra += f"\n⚠️ <b>Landmine Check:</b>\n{mines}"
+    else:
+        extra += "\n⚠️ <b>Landmine Check:</b> None flagged ✅"
+
+    if lhf and classification == "VALID_BUT_NOT_EASY" and lhf.reject_reasons:
+        reasons = "\n".join(f"• {r}" for r in lhf.reject_reasons[:3])
+        extra += f"\n\n<i>Why not easy:</i>\n{reasons}"
+
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    if classification == "LOW_HANGING_FRUIT":
+        verdict_line = "<b>VERDICT: ✅ TAKE</b>"
+    elif classification == "VALID_BUT_NOT_EASY":
+        verdict_line = "<b>VERDICT: ⚠️ TAKE (cautious sizing)</b>"
+    else:
+        verdict_line = f"<b>VERDICT: ✅ TAKE</b>"
+
+    parts = [
+        header,
+        "",
+        f"<b>{s.ticker}</b> — {s.spread_type}",
+        strike_line,
+        "",
+        prem_line,
+        "",
+        score_block,
+        "",
+        flow_block,
+        "",
+        struct_block,
+        extra,
+        "",
+        verdict_line,
+    ]
+
+    return "\n".join(parts)
+
+
+async def send_spread_alerts(spreads: list) -> None:
+    """
+    Send Telegram alerts for all TAKE spreads.
+    LHF spreads are sent first. Persists each to spread_tracker.
+    """
+    if not settings.telegram_enabled:
+        logger.info("send_spread_alerts: Telegram disabled — skipping.")
+        return
+
+    valid = [s for s in spreads if s.verdict == "TAKE"]
+    logger.info("send_spread_alerts: %d spread(s) to send", len(valid))
+
+    try:
+        from app.services.spread_tracker import record_spread
+        _tracker_ok = True
+    except Exception:
+        _tracker_ok = False
+
+    for spread in valid:
+        text = format_spread_alert(spread)
+        await _post(text)
+        if _tracker_ok:
+            try:
+                record_spread(spread)
+            except Exception as exc:
+                logger.warning("spread_tracker.record_spread failed: %s", exc)

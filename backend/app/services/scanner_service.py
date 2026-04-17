@@ -436,6 +436,28 @@ async def _scheduler_loop() -> None:
             )
             await send_scan_summary(result)
 
+            # ── Credit Spread Engine (runs after flow scan) ───────────────────
+            try:
+                from app.services.credit_spread_engine import run_spread_scan  # noqa: PLC0415
+                from app.services.telegram_service import send_spread_alerts   # noqa: PLC0415
+                from app.routers.credit_spread import _store_spread_result     # noqa: PLC0415
+
+                spread_result = await run_spread_scan(result)
+                spread_result["scanned_at"] = result["scanned_at"].isoformat()
+                spread_result["tickers_scanned"] = result["tickers_scanned"]
+                _store_spread_result(spread_result)
+
+                if spread_result["spreads"]:
+                    logger.info(
+                        "[scheduler] spread engine: %d valid trade(s) found",
+                        len(spread_result["spreads"]),
+                    )
+                    await send_spread_alerts(spread_result["spreads"])
+                else:
+                    logger.info("[scheduler] spread engine: no valid setups this cycle")
+            except Exception as spread_exc:
+                logger.error("[scheduler] spread engine error: %s", spread_exc, exc_info=True)
+
             # Social automation — additive, does not affect Telegram flow
             if next_dt.hour == 8:
                 social_type = PostType.PREMARKET
