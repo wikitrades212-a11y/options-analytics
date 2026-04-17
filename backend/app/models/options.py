@@ -48,6 +48,10 @@ class OptionContract(BaseModel):
     underlying_price: Optional[float] = None
     moneyness: Optional[float] = None     # strike / underlying_price
 
+    # Locked signal-time premium — set once at hydration from live chain data.
+    # Fallback order: mid → mark → last. Never recalculated from live chain after creation.
+    premium_at_signal: float = 0.0
+
 
 class OptionChainResponse(BaseModel):
     ticker: str

@@ -34,15 +34,18 @@ def _hydrate(raw: dict, underlying_price: float) -> OptionContract:
     # Use the best available price for notional calculations so we never
     # silently drop flow when bid+ask haven't updated but mark/last have.
     eff_price = mid if mid > 0 else (mark if mark > 0 else last)
+    # Lock signal-time premium at hydration: mid → mark → last. Never refreshed.
+    premium_at_signal = mid if mid > 0 else (mark if mark > 0 else last)
     oi  = raw.get("open_interest", 0) or 0
     vol = raw.get("volume", 0) or 0
     return OptionContract(
         **raw,
-        oi_notional      = round(oi  * eff_price * 100, 2),
-        vol_notional     = round(vol * eff_price * 100, 2),
-        vol_oi_ratio     = round(vol / max(oi, 1), 4),
-        underlying_price = underlying_price,
-        moneyness        = round(raw.get("strike", 0) / underlying_price, 4) if underlying_price else None,
+        oi_notional       = round(oi  * eff_price * 100, 2),
+        vol_notional      = round(vol * eff_price * 100, 2),
+        vol_oi_ratio      = round(vol / max(oi, 1), 4),
+        underlying_price  = underlying_price,
+        moneyness         = round(raw.get("strike", 0) / underlying_price, 4) if underlying_price else None,
+        premium_at_signal = round(premium_at_signal, 2),
     )
 
 
@@ -76,6 +79,9 @@ async def _fetch_chain(ticker: str) -> tuple[float, List[str], List[OptionContra
         results = await asyncio.gather(*[fetch_one(e) for e in expirations_to_fetch])
         raw_list = [r for batch in results for r in batch]
 
+    no_strike = [r for r in raw_list if not r.get("strike")]
+    if no_strike:
+        logger.warning("options_service [%s]: dropped %d contract(s) missing strike", ticker, len(no_strike))
     contracts = [_hydrate(r, price) for r in raw_list if r.get("strike")]
     return price, all_expirations, contracts
 

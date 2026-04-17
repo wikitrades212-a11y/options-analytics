@@ -85,13 +85,17 @@ def format_alert(contract: OptionContract, bias: str, underlying_price: float) -
     conv   = contract.conviction_score
     cls    = contract.contract_class
 
+    prem_at_sig = contract.premium_at_signal
+    prem_at_sig_str = f"${prem_at_sig:.2f}" if prem_at_sig else "N/A"
+
     lines = [
         f"{emoji} *{contract.ticker} ${contract.strike:.0f}{otype}  {exp_str}*{money_lbl}",
         (
-            f"💰 {_fmt_premium(contract.vol_notional)}  ·  "
+            f"💰 Notional: {_fmt_premium(contract.vol_notional)}  ·  "
             f"Vol `{contract.volume:,}` / OI `{contract.open_interest:,}` "
             f"(`{contract.vol_oi_ratio:.1f}x`)"
         ),
+        f"📌 Premium at signal: `{prem_at_sig_str}`",
         f"Δ `{delta_str}`  IV `{iv_str}`  DTE `{dte}`",
         f"Score `{contract.unusual_score:.0f}`  ·  Conviction `{grade}` ({conv:.0f})  ·  _{cls}_",
         f"📈 *{bias}*",
@@ -122,6 +126,9 @@ def format_cluster_alert(alert: dict) -> str:
 
     strikes_str = ", ".join(f"${s:.0f}" for s in cluster_strikes)
 
+    prem_at_sig = contract.premium_at_signal
+    prem_at_sig_str = f"${prem_at_sig:.2f}" if prem_at_sig else "N/A"
+
     lines = [
         f"{emoji} *{contract.ticker} {otype}  {exp_str}*  — {cluster_count} strikes",
         f"Strikes: _{strikes_str}_",
@@ -130,10 +137,11 @@ def format_cluster_alert(alert: dict) -> str:
             f"Conviction `{grade}` ({conv:.0f})  _{cls}_"
         ),
         (
-            f"💰 {_fmt_premium(contract.vol_notional)}  ·  "
+            f"💰 Notional: {_fmt_premium(contract.vol_notional)}  ·  "
             f"Vol `{contract.volume:,}` / OI `{contract.open_interest:,}` "
             f"(`{contract.vol_oi_ratio:.1f}x`)"
         ),
+        f"📌 Premium at signal: `{prem_at_sig_str}`",
         f"Δ `{delta_str}`  IV `{iv_str}`  DTE `{dte}`",
         f"📈 *{bias}*",
     ]
