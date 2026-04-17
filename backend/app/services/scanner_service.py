@@ -485,3 +485,58 @@ def stop_scheduler() -> None:
     if _scheduler_task and not _scheduler_task.done():
         _scheduler_task.cancel()
         logger.info("Scanner scheduler task cancelled.")
+
+
+# ── FBA daily scheduler (6 AM ET every day) ───────────────────────────────────
+
+_fba_scheduler_task: Optional[asyncio.Task] = None
+
+
+def _next_fba_dt() -> datetime:
+    """Next 6:00 AM ET — runs every day (not just weekdays)."""
+    now = datetime.now(_ET)
+    cand = datetime(now.year, now.month, now.day, 6, 0, tzinfo=_ET)
+    if cand > now:
+        return cand
+    return cand + timedelta(days=1)
+
+
+async def _fba_scheduler_loop() -> None:
+    logger.info("FBA scheduler started — daily 6:00 AM ET")
+
+    while True:
+        now_et  = datetime.now(_ET)
+        next_dt = _next_fba_dt()
+        sleep_secs = (next_dt - now_et).total_seconds()
+
+        logger.info("[fba-scheduler] next run: %s ET (in %.1f min)", next_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs / 60)
+
+        try:
+            await asyncio.sleep(max(sleep_secs, 0))
+        except asyncio.CancelledError:
+            raise
+
+        try:
+            from app.services.fba_service import run_fba_scan, send_fba_alerts  # noqa: PLC0415
+            result = await run_fba_scan(include_trends=True, min_score=50.0, top_n=15)
+            logger.info("[fba-scheduler] done — %d high, %d medium", result["total_high"], result["total_medium"])
+            if result["high"]:
+                await send_fba_alerts(result["top_products"], top_n=5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[fba-scheduler] error: %s", exc, exc_info=True)
+
+
+def start_fba_scheduler() -> None:
+    global _fba_scheduler_task
+    if _fba_scheduler_task is None or _fba_scheduler_task.done():
+        _fba_scheduler_task = asyncio.create_task(_fba_scheduler_loop())
+        logger.info("FBA scheduler task created.")
+
+
+def stop_fba_scheduler() -> None:
+    global _fba_scheduler_task
+    if _fba_scheduler_task and not _fba_scheduler_task.done():
+        _fba_scheduler_task.cancel()
+        logger.info("FBA scheduler task cancelled.")

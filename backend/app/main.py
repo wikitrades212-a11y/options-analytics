@@ -14,9 +14,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
-from app.routers import options_router, calculator_router, scanner_router, credit_spread_router
+from app.routers import options_router, calculator_router, scanner_router, credit_spread_router, fba_router
 from app.providers import provider
-from app.services.scanner_service import start_scheduler, stop_scheduler
+from app.services.scanner_service import start_scheduler, stop_scheduler, start_fba_scheduler, stop_fba_scheduler
 from app.services.futures_service import start_futures_scheduler, stop_futures_scheduler
 from app.services.social_service import start_social_scheduler, stop_social_scheduler
 from app.services.telegram_bot import start_bot, stop_bot
@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_warmup_provider())
     start_scheduler()
+    start_fba_scheduler()
     start_futures_scheduler()
     start_social_scheduler()
     start_bot()          # Telegram command bot (long-polling)
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
 
     stop_bot()
     stop_scheduler()
+    stop_fba_scheduler()
     stop_futures_scheduler()
     stop_social_scheduler()
     logger.info("Shutting down.")
@@ -96,6 +98,7 @@ app.include_router(options_router)
 app.include_router(calculator_router)
 app.include_router(scanner_router)
 app.include_router(credit_spread_router)
+app.include_router(fba_router)
 
 
 @app.get("/health", tags=["meta"])
