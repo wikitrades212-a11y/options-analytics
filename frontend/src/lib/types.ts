@@ -149,3 +149,102 @@ export interface UnusualFilters {
   expiry: "all" | "nearest" | "weeklies";
   tags: string[];
 }
+
+// ── Stock Fundamentals ────────────────────────────────────────────────────────
+
+export interface GrowthMetrics {
+  revenue_cagr_3y: number | null;
+  revenue_growth_yoy: number | null;
+  net_income_growth_yoy: number | null;
+  eps_growth_yoy: number | null;
+  fcf_growth_yoy: number | null;
+  fcf_cagr_3y: number | null;
+}
+
+export interface MarginMetrics {
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+  fcf_margin: number | null;
+}
+
+export interface FinancialHealthMetrics {
+  debt_to_equity: number | null;
+  current_ratio: number | null;
+  cash_position: number | null;
+  total_debt: number | null;
+  net_debt: number | null;
+  interest_coverage: number | null;
+  debt_level: string | null;
+  liquidity: string | null;
+}
+
+export interface FCFProfile {
+  years: number[];
+  values: number[];
+  is_positive_all_years: boolean;
+  is_growing: boolean;
+  consistency: string;
+  latest_fcf: number | null;
+  avg_fcf_3y: number | null;
+}
+
+export interface ValuationMetrics {
+  pe_ratio: number | null;
+  forward_pe: number | null;
+  peg_ratio: number | null;
+  price_to_sales: number | null;
+  price_to_book: number | null;
+  ev_to_ebitda: number | null;
+  fcf_yield: number | null;
+}
+
+export interface DCFResult {
+  intrinsic_value_per_share: number | null;
+  current_price: number;
+  upside_downside_pct: number | null;
+  terminal_value: number | null;
+  pv_of_cash_flows: number | null;
+  projected_growth_rate: number | null;
+  confidence: "high" | "medium" | "low";
+  confidence_reasons: string[];
+  is_reliable: boolean;
+  explanation: string | null;
+}
+
+export interface ScoreBreakdown {
+  business_quality: number;
+  financial_strength: number;
+  valuation: number;
+  risk_stability: number;
+  total: number;
+}
+
+export interface StockScore {
+  score: ScoreBreakdown;
+  confidence: "high" | "medium" | "low";
+  verdict: string;
+  reasons: string[];
+}
+
+export interface StockAnalysis {
+  ticker: string;
+  company_name: string;
+  current_price: number;
+  market_cap: number | null;
+  sector: string | null;
+  valuation_metrics: ValuationMetrics;
+  growth_metrics: GrowthMetrics;
+  margin_metrics: MarginMetrics;
+  financial_health: FinancialHealthMetrics;
+  fcf_profile: FCFProfile;
+  dcf: DCFResult;
+  score: StockScore;
+  verdict: string;
+  verdict_reasons: string[];
+  warnings: string[];
+  summary: string;
+  analysis_date: string | null;
+  data_quality: "good" | "partial" | "limited";
+  missing_fields: string[];
+}

@@ -2,17 +2,18 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BarChart3, Flame, LineChart, Settings, Target, Sun, Moon } from "lucide-react";
+import { Activity, BarChart3, Flame, LineChart, Settings, Target, Sun, Moon, TrendingUp } from "lucide-react";
 import clsx from "clsx";
 import { useState, useEffect } from "react";
 
 const NAV_ITEMS = [
-  { label: "Dashboard",       href: "/",        icon: Activity },
-  { label: "Chain Explorer",  href: "/chain",   icon: BarChart3 },
-  { label: "Unusual Options", href: "/unusual", icon: Flame },
-  { label: "Calculator",      href: "/target",  icon: Target },
-  { label: "Charts",          href: "/charts",  icon: LineChart },
-  { label: "Settings",        href: "/settings",icon: Settings },
+  { label: "Dashboard",       href: "/",              icon: Activity },
+  { label: "Chain Explorer",  href: "/chain",         icon: BarChart3 },
+  { label: "Unusual Options", href: "/unusual",       icon: Flame },
+  { label: "Calculator",      href: "/target",        icon: Target },
+  { label: "Fundamentals",    href: "/fundamentals",  icon: TrendingUp },
+  { label: "Charts",          href: "/charts",        icon: LineChart },
+  { label: "Settings",        href: "/settings",      icon: Settings },
 ];
 
 function ThemeToggle() {

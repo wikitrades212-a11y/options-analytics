@@ -3,3 +3,4 @@ from .calculator import router as calculator_router
 from .scanner import router as scanner_router
 from .credit_spread import router as credit_spread_router
 from .fba import router as fba_router
+from .stock import router as stock_router
