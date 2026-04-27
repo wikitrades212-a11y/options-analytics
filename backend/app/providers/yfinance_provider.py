@@ -1,7 +1,8 @@
 """
 Yahoo Finance Provider
 Fetches annual financial statement data and maps it to RawStockData.
-Uses yfinance — no API key required.
+Price: Tradier → Alpaca → Robinhood → yfinance (first live source wins).
+Fundamentals (income, balance, cashflow): yfinance.
 
 Field mapping is defensive: we try multiple known column names and fall
 back gracefully when Yahoo changes its schema between library versions.
@@ -12,6 +13,7 @@ import asyncio
 import logging
 from typing import Any, Optional
 
+import httpx
 import pandas as pd
 import yfinance as yf
 
@@ -127,12 +129,8 @@ def _fetch_sync(ticker: str) -> RawStockData:
     yf_ticker = yf.Ticker(ticker)
     info: dict[str, Any] = yf_ticker.info or {}
 
-    # Validate — yfinance returns a minimal dict for unknown tickers
-    if not info.get("regularMarketPrice") and not info.get("currentPrice"):
-        # Try one more field before giving up
-        if not info.get("previousClose"):
-            raise ValueError(f"No data found for ticker '{ticker}'. Check the symbol.")
-
+    # Don't fail here — live price sources (Tradier/Alpaca/RH) will supply the
+    # price even if Yahoo Finance's info dict is empty. Use 0.0 as placeholder.
     current_price = (
         _info(info, "currentPrice", "regularMarketPrice", "previousClose") or 0.0
     )
@@ -186,7 +184,77 @@ def _fetch_sync(ticker: str) -> RawStockData:
     )
 
 
+async def _fetch_live_price(ticker: str) -> tuple[Optional[float], str]:
+    """Try Tradier → Alpaca → Robinhood for a real-time price.
+    Returns (price, source_name) or (None, 'yfinance') if all fail."""
+    from app.config import settings
+
+    # Tradier
+    if settings.tradier_token:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as c:
+                r = await c.get(
+                    "https://api.tradier.com/v1/markets/quotes",
+                    headers={"Authorization": f"Bearer {settings.tradier_token}", "Accept": "application/json"},
+                    params={"symbols": ticker, "greeks": "false"},
+                )
+            if r.status_code == 200:
+                quote = r.json().get("quotes", {}).get("quote", {})
+                price = quote.get("last") or quote.get("bid")
+                if price and float(price) > 0:
+                    return float(price), "tradier"
+        except Exception:
+            pass
+
+    # Alpaca
+    if settings.alpaca_api_key and settings.alpaca_api_secret:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as c:
+                r = await c.get(
+                    f"https://data.alpaca.markets/v2/stocks/{ticker}/trades/latest",
+                    headers={"APCA-API-KEY-ID": settings.alpaca_api_key, "APCA-API-SECRET-KEY": settings.alpaca_api_secret},
+                    params={"feed": "sip"},
+                )
+            if r.status_code == 200:
+                price = r.json().get("trade", {}).get("p")
+                if price and float(price) > 0:
+                    return float(price), "alpaca"
+        except Exception:
+            pass
+
+    # Robinhood
+    if settings.robinhood_token:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as c:
+                r = await c.get(
+                    f"https://api.robinhood.com/quotes/{ticker}/",
+                    headers={"Authorization": f"Bearer {settings.robinhood_token}"},
+                )
+            if r.status_code == 200:
+                price = r.json().get("last_trade_price")
+                if price and float(price) > 0:
+                    return float(price), "robinhood"
+        except Exception:
+            pass
+
+    return None, "yfinance"
+
+
 async def fetch_raw_stock_data(ticker: str) -> RawStockData:
-    """Async wrapper — runs the blocking yfinance fetch in a thread pool."""
+    """Async wrapper — runs yfinance (for fundamentals) and live price sources
+    concurrently. Live price wins over yfinance. Raises only if no price at all."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _fetch_sync, ticker.upper())
+
+    raw, (live_price, price_source) = await asyncio.gather(
+        loop.run_in_executor(None, _fetch_sync, ticker.upper()),
+        _fetch_live_price(ticker.upper()),
+    )
+
+    final_price = live_price or raw.current_price
+    if not final_price:
+        raise ValueError(f"No price data found for '{ticker}'. Check the symbol.")
+
+    return raw.model_copy(update={
+        "current_price": final_price,
+        "price_source":  price_source,
+    })

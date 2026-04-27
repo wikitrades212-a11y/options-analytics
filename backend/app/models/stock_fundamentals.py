@@ -45,6 +45,7 @@ class RawStockData(BaseModel):
     ticker: str
     company_name: str
     current_price: float
+    price_source: Optional[str] = "yfinance"  # tradier | alpaca | robinhood | yfinance
     market_cap: Optional[float] = None
     shares_outstanding: Optional[float] = None
     sector: Optional[str] = None
@@ -155,6 +156,7 @@ class StockAnalysis(BaseModel):
     ticker: str
     company_name: str
     current_price: float
+    price_source: Optional[str] = "yfinance"
     market_cap: Optional[float] = None
     sector: Optional[str] = None
 

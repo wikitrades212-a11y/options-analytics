@@ -920,6 +920,302 @@ def _build_quick_read_summary(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# REGIME CLASSIFICATION + FINAL VERDICT
+# ──────────────────────────────────────────────────────────────────────────────
+
+_MAJOR_INDICES: Set[str] = {"SPY", "QQQ", "IWM"}
+_INDEX_TO_FUTURE: Dict[str, str] = {"SPY": "ES", "QQQ": "NQ", "IWM": "RTY", "DIA": "YM"}
+
+
+def _classify_regime(
+    bias: Dict[str, Any],
+    analyzed: List[Dict[str, Any]],
+) -> str:
+    """
+    Classify market regime using flow percentages + index confirmation.
+
+    Rule: do NOT label CHOP when flow ≥65% one direction, execution_conf ≥65,
+    and 2+ major indices confirm.  That is EARLY_TREND, not CHOP.
+
+    TREND_UP/DOWN       — ≥65% flow + 2+ index confirms + bias_conf ≥55
+    EARLY_TREND_UP/DOWN — ≥65% flow + 2+ index confirms + bias_conf <55
+    ROTATIONAL          — one strong index, others not confirming
+    CHOP                — mixed, genuinely no dominant direction
+    """
+    bull_pct  = bias["bull_pct"]
+    bear_pct  = bias["bear_pct"]
+    bias_conf = bias["confidence"]
+
+    bull_idx = sum(
+        1 for a in analyzed
+        if a["ticker"] in _MAJOR_INDICES
+        and a["sentiment"] == "BULLISH"
+        and not a["is_hedge"]
+        and a["strength"] != "WEAK"
+    )
+    bear_idx = sum(
+        1 for a in analyzed
+        if a["ticker"] in _MAJOR_INDICES
+        and a["sentiment"] == "BEARISH"
+        and not a["is_hedge"]
+        and a["strength"] != "WEAK"
+    )
+
+    if bull_pct >= 65 and bull_idx >= 2:
+        return "TREND_UP" if bias_conf >= 55 else "EARLY_TREND_UP"
+
+    if bear_pct >= 65 and bear_idx >= 2:
+        return "TREND_DOWN" if bias_conf >= 55 else "EARLY_TREND_DOWN"
+
+    # Rotational: one major index strong, others neutral or opposite
+    total_idx_signals = bull_idx + bear_idx
+    if total_idx_signals == 1:
+        return "ROTATIONAL"
+    if bull_idx >= 2 and bear_pct > 35:
+        return "ROTATIONAL"
+    if bear_idx >= 2 and bull_pct > 35:
+        return "ROTATIONAL"
+
+    return "CHOP"
+
+
+def _compute_execution_confidence(
+    bias: Dict[str, Any],
+    analyzed: List[Dict[str, Any]],
+) -> int:
+    """
+    Execution confidence: how actionable the current flow is, beyond raw bias split.
+    Can exceed bias_confidence when institutional + index signals strongly confirm.
+    """
+    base  = bias["confidence"]
+    label = bias["label"]
+
+    # Institutional presence boost (up to +20)
+    inst_count  = sum(1 for a in analyzed if a["strength"] == "INSTITUTIONAL")
+    inst_boost  = min(20, inst_count * 6)
+
+    # Index confirmation boost (up to +15)
+    if label in ("BULLISH", "BEARISH"):
+        direction  = label
+        idx_confs  = sum(
+            1 for a in analyzed
+            if a["ticker"] in _MAJOR_INDICES
+            and a["sentiment"] == direction
+            and not a["is_hedge"]
+            and a["strength"] != "WEAK"
+        )
+        index_boost = min(15, idx_confs * 7)
+    else:
+        index_boost = 0
+
+    # Penalty for thin scan (< 3 actionable tickers = low confidence in reading)
+    size_pen = 10 if len(analyzed) < 3 else (5 if len(analyzed) < 5 else 0)
+
+    return min(100, max(0, int(base + inst_boost + index_boost - size_pen)))
+
+
+def _build_futures_execution(
+    bias: Dict[str, Any],
+    analyzed: List[Dict[str, Any]],
+    regime: str,
+    tradable: bool,
+    do_not_chase: bool,
+) -> Dict[str, str]:
+    """
+    Build NQ/ES/RTY/YM execution lines.
+    When TRADABLE=NO, all lines say WATCH — prevents contradictions in output.
+    """
+    if not tradable:
+        return {
+            "NQ":  "WATCH — no directional trade",
+            "ES":  "WATCH — no directional trade",
+            "RTY": "WATCH — no directional trade",
+            "YM":  "WATCH — no directional trade",
+        }
+
+    label = bias["label"]
+    chase = " — DO NOT CHASE, wait for pullback" if do_not_chase else ""
+
+    # Find which futures have confirming index flow
+    confirming: Set[str] = set()
+    for a in analyzed:
+        fut = _INDEX_TO_FUTURE.get(a["ticker"])
+        if fut and a["sentiment"] == label and not a["is_hedge"] and a["strength"] != "WEAK":
+            confirming.add(fut)
+
+    if label == "BULLISH":
+        return {
+            "NQ":  f"LONG dips{chase}" if "NQ" in confirming else f"WATCH — not confirming{chase}",
+            "ES":  f"LONG dips{chase}" if "ES" in confirming else f"WATCH — not confirming{chase}",
+            "RTY": f"LONG dips{chase}" if "RTY" in confirming else "WATCH — lagging",
+            "YM":  "WATCH — low priority",
+        }
+    else:  # BEARISH
+        chase_b = " — DO NOT CHASE, wait for bounce" if do_not_chase else ""
+        return {
+            "NQ":  f"SHORT bounces{chase_b}" if "NQ" in confirming else f"WATCH — not confirming{chase_b}",
+            "ES":  f"SHORT bounces{chase_b}" if "ES" in confirming else f"WATCH — not confirming{chase_b}",
+            "RTY": f"SHORT bounces{chase_b}" if "RTY" in confirming else "WATCH — lagging",
+            "YM":  "WATCH — low priority",
+        }
+
+
+def _build_final_verdict(
+    bias: Dict[str, Any],
+    analyzed: List[Dict[str, Any]],
+    regime: str,
+    execution_conf: int,
+) -> Dict[str, Any]:
+    """
+    Build structured tradability assessment.
+
+    Replaces the flawed `bias_confidence < 50 → NO_TRADE` rule.
+    Gate is now: ALIGNMENT + EXECUTION_CONFIDENCE (not bias confidence alone).
+
+    Low bias_confidence with strong execution_confidence = CONDITIONAL_TRADE.
+    Weak execution_confidence with mixed alignment = NO_TRADE.
+    """
+    bias_conf = bias["confidence"]
+    label     = bias["label"]
+    alignment = "ALIGNED" if label != "MIXED" else "MIXED"
+
+    # Tradability gate: alignment + execution confidence
+    if alignment == "ALIGNED" and execution_conf >= 65 and regime != "CHOP":
+        tradable = True
+        if bias_conf >= 55:
+            trade_grade = "FULL_TRADE"
+        else:
+            trade_grade = "CONDITIONAL_TRADE"
+        trade_style = "ACTIVE"
+    else:
+        tradable    = False
+        trade_grade = "NO_TRADE"
+        trade_style = "WATCH_ONLY"
+
+    do_not_chase = False
+
+    # Playbook by regime
+    if regime == "TREND_UP":
+        playbook  = "BUY_BREAKOUTS_OR_PULLBACKS"
+        primary   = "Buy breakouts; add on pullbacks to VWAP"
+        secondary = "Scale out above R1/R2"
+    elif regime == "EARLY_TREND_UP":
+        playbook     = "BUY_DIPS_ONLY"
+        primary      = "Buy pullbacks to VWAP or prior HOD — avoid chasing"
+        secondary    = "Small size until trend confirms with higher-confidence bar"
+        do_not_chase = True
+    elif regime == "TREND_DOWN":
+        playbook  = "SHORT_BREAKDOWNS_OR_RETESTS"
+        primary   = "Short breakdowns; add on retests from below"
+        secondary = "Scale out below S1/S2"
+    elif regime == "EARLY_TREND_DOWN":
+        playbook     = "SHORT_BOUNCES_ONLY"
+        primary      = "Sell bounces to VWAP — avoid chasing breakdowns"
+        secondary    = "Small size until trend confirms"
+        do_not_chase = True
+    elif regime == "ROTATIONAL":
+        playbook  = "TRADE_LEADERS_VS_LAGGARDS"
+        primary   = "Long leading sectors; short lagging sectors — pairs approach"
+        secondary = "Avoid broad market directional bias"
+    else:  # CHOP
+        playbook    = "NO_TRADE_OR_SCALP_ONLY"
+        primary     = "Wait for opening range — no directional commitment"
+        secondary   = "Scalp extremes only with tight stops"
+        tradable    = False
+        trade_grade = "NO_TRADE"
+        trade_style = "WATCH_ONLY"
+
+    futures = _build_futures_execution(bias, analyzed, regime, tradable, do_not_chase)
+
+    return {
+        "regime":         regime,
+        "bias_conf":      bias_conf,
+        "execution_conf": execution_conf,
+        "alignment":      alignment,
+        "tradable":       tradable,
+        "trade_grade":    trade_grade,
+        "trade_style":    trade_style,
+        "playbook":       playbook,
+        "primary":        primary,
+        "secondary":      secondary,
+        "do_not_chase":   do_not_chase,
+        "futures":        futures,
+        "bias_label":     label,
+    }
+
+
+def _format_final_verdict(verdict: Dict[str, Any], bias: Dict[str, Any]) -> List[str]:
+    """Format the FINAL VERDICT block as Markdown lines for Telegram."""
+    v = verdict
+    tradable_str = "*YES*" if v["tradable"] else "*NO*"
+    if v["tradable"] and v["trade_grade"] == "CONDITIONAL_TRADE":
+        tradable_str = "*YES — CONDITIONAL*"
+    elif v["tradable"] and v["trade_grade"] == "FULL_TRADE":
+        tradable_str = "*YES — FULL TRADE*"
+
+    chase_str = "*TRUE ⚠️*" if v["do_not_chase"] else "FALSE"
+
+    lines: List[str] = [
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "*FINAL VERDICT*",
+        f"Regime: `{v['regime']}`",
+        f"Bias Confidence: `{v['bias_conf']}`",
+        f"Execution Confidence: `{v['execution_conf']}`",
+        f"Alignment: `{v['alignment']}`",
+        f"Tradable: {tradable_str}",
+        f"Trade Grade: `{v['trade_grade']}`",
+        f"Trade Style: `{v['trade_style']}`",
+        f"Playbook: *{v['playbook'].replace('_',' ')}*",
+        f"Primary: {v['primary']}",
+        f"Secondary: {v['secondary']}",
+        f"Do Not Chase: {chase_str}",
+    ]
+
+    # Reason line — explain the grade
+    if not v["tradable"] and v["regime"] == "CHOP":
+        lines.append("Reason: Mixed tape — no index confirmation of direction")
+    elif not v["tradable"]:
+        lines.append(f"Reason: Alignment={v['alignment']}, Execution Conf={v['execution_conf']} (<65 threshold)")
+    elif v["trade_grade"] == "CONDITIONAL_TRADE":
+        lines.append(f"Reason: Bias conf {v['bias_conf']} below 55 — trade dips only, not breakouts")
+
+    # Execution section — only shown if tradable
+    lines.append("")
+    if v["tradable"]:
+        lines.append("*Execution (enter only on setup confirmation):*")
+    else:
+        lines.append("*Execution (WATCH ONLY — do not commit to direction):*")
+
+    for fut, action in v["futures"].items():
+        lines.append(f"{fut}: `{action}`")
+
+    # Warnings
+    if v["do_not_chase"]:
+        lines.append("")
+        lines.append("⚠️ DO NOT CHASE — early trend, not confirmed. Wait for pullback entry.")
+    if not v["tradable"] and v["regime"] != "CHOP":
+        lines.append("⚠️ Execution confidence too low for directional trades — watch only.")
+
+    # BOT_DATA
+    lines.append("")
+    lines.append("```")
+    lines.append("BOT_DATA")
+    lines.append(f"BIAS={v['bias_label']}")
+    lines.append(f"REGIME={v['regime']}")
+    lines.append(f"TRADABLE={'YES' if v['tradable'] else 'NO'}")
+    lines.append(f"TRADE_GRADE={v['trade_grade']}")
+    lines.append(f"TRADE_STYLE={v['trade_style']}")
+    lines.append(f"PLAYBOOK={v['playbook']}")
+    lines.append(f"DO_NOT_CHASE={'TRUE' if v['do_not_chase'] else 'FALSE'}")
+    lines.append(f"DATA_QUALITY=LIVE")
+    lines.append("```")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    return lines
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # PUBLIC ENTRY POINT
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -949,6 +1245,12 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
     plan             = _build_gameplan(bias, top_bulls, top_bears, sector_dynamics, market_structure)
     quick_read_line  = _build_quick_read_summary(bias, sector_dynamics)
 
+    # ── Regime + final verdict (prepended before market bias) ─────────────────
+    regime        = _classify_regime(bias, actionable)
+    execution_conf = _compute_execution_confidence(bias, actionable)
+    verdict       = _build_final_verdict(bias, actionable, regime, execution_conf)
+    verdict_lines = _format_final_verdict(verdict, bias)
+
     refined_label = bias.get("refined_label", bias["label"])
     bias_emoji    = {"BULLISH": "🟢", "BEARISH": "🔴"}.get(bias["label"], "🟡")
     override_tag  = " ⚠️MACRO OVERRIDE" if bias.get("macro_override") else ""
@@ -958,6 +1260,15 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
     upside_leader   = top_bulls[0]["ticker"] if top_bulls else None
 
     lines: List[str] = []
+
+    # ── FINAL VERDICT section (top) ───────────────────────────────────────────
+    lines.extend(verdict_lines)
+
+    # ── Contradiction guard: suppress directional game plan when NO_TRADE ─────
+    # If execution is WATCH_ONLY, the existing game plan execution steps
+    # would say "Short X / Long Y" — that contradicts TRADABLE=NO.
+    # Replace with a watch-only note in that case.
+    _suppress_execution = not verdict["tradable"]
 
     # ── Header ───────────────────────────────────────────────────────────────
     lines.append(f"{bias_emoji} *MARKET BIAS: {refined_label}{override_tag}*")
@@ -1040,8 +1351,17 @@ def build_summary_message(scorer_alerts: List[Dict[str, Any]]) -> str:
     # ── Game Plan ─────────────────────────────────────────────────────────────
     if plan:
         lines.append("*Game Plan*")
-        for step in plan:
-            lines.append(step)
+        if _suppress_execution:
+            # Show strategy but replace directional execution with watch note
+            for step in plan:
+                if step.startswith("▸ *Execution"):
+                    lines.append("▸ *Execution:*")
+                    lines.append("  — WATCH ONLY — no directional commitment until regime confirms")
+                    break
+                lines.append(step)
+        else:
+            for step in plan:
+                lines.append(step)
         lines.append("")
 
     # ── Quick Read ────────────────────────────────────────────────────────────

@@ -129,6 +129,7 @@ def analyze_stock(
         ticker=data.ticker.upper(),
         company_name=data.company_name,
         current_price=data.current_price,
+        price_source=getattr(data, "price_source", "yfinance"),
         market_cap=data.market_cap,
         sector=data.sector,
         valuation_metrics=valuation,

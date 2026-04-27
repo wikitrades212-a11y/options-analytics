@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     tradier_sandbox: bool = False
     data_provider: str = "tradier"    # only supported value
 
+    # ── Live price sources (Tradier → Alpaca → Robinhood → yfinance fallback) ──
+    alpaca_api_key: str = ""
+    alpaca_api_secret: str = ""
+    robinhood_token: str = ""         # bearer token from browser/bookmarklet
+
     # ── App ───────────────────────────────────────────────────────────────────
     cache_ttl: int = 60
     rate_limit: int = 30
@@ -32,10 +37,11 @@ class Settings(BaseSettings):
     fba_chat_id: str = ""
 
     # ── Credit Spread / LHF engine ────────────────────────────────────────────
-    lhf_min_score: int = 80              # minimum LHF score to classify as LOW_HANGING_FRUIT
+    lhf_min_score: int = 85              # strict — only genuinely easy trades qualify
     spread_min_score: int = 70           # minimum base spread score to output a TAKE
     dedup_db_path: str = ""              # Railway: set to /data/dedup.db
     spread_db_path: str = ""            # Railway: set to /data/spread_trades.db
+    lhf_debug_alerts: bool = False       # when True, also send ❌ PASS alerts to channel
 
     # ── Social automation (optional) ──────────────────────────────────────────
     social_enabled: bool = False

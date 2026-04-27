@@ -74,11 +74,19 @@ async def _get_updates(offset: int) -> list[dict]:
 # ── Command implementations ────────────────────────────────────────────────────
 
 async def _cmd_scan(args: list[str], chat_id: str) -> None:
-    await _send(chat_id, "🔄 Running spread scan — please wait...")
+    # /scan          — TAKE + WATCH alerts only (default)
+    # /scan all      — also sends ❌ PASS alerts (manual audit)
+    # /scan debug    — alias for 'all'
+    include_pass = any(a.lower() in ("all", "debug") for a in args) or settings.lhf_debug_alerts
+
+    await _send(chat_id,
+        "🔄 Running spread scan — please wait..."
+        + (" <i>(all setups including PASS)</i>" if include_pass else "")
+    )
     try:
         from app.services.scanner_service import run_scan, _store_result
         from app.services.credit_spread_engine import run_spread_scan
-        from app.services.telegram_service import send_spread_alerts
+        from app.services.telegram_service import send_spread_alerts, send_pass_alerts
         from app.routers.credit_spread import _store_spread_result
 
         scan   = await run_scan()
@@ -89,22 +97,30 @@ async def _cmd_scan(args: list[str], chat_id: str) -> None:
         result["tickers_scanned"] = scan["tickers_scanned"]
         _store_spread_result(result)
 
-        n_lhf  = result.get("total_lhf", 0)
-        n_tot  = result.get("total_valid", 0)
-        n_scan = len(scan.get("tickers_scanned", []))
+        n_lhf     = result.get("total_lhf", 0)
+        n_tot     = result.get("total_valid", 0)
+        n_scan    = len(scan.get("tickers_scanned", []))
+        n_passed  = len([r for r in result.get("rejected", []) if r.get("spread")])
 
         if n_tot == 0:
             await _send(chat_id,
                 f"⚪ Scan complete — {n_scan} tickers scanned.\n"
                 "No valid spreads found this cycle."
+                + (f"\n{n_passed} setup(s) blocked (❌ PASS). /rejects to review." if n_passed else "")
             )
         else:
             await send_spread_alerts(result["spreads"])
             await _send(chat_id,
                 f"✅ Scan complete — {n_scan} tickers scanned.\n"
                 f"Valid spreads: {n_tot}  |  🍒 LHF: {n_lhf}\n"
-                "Alerts sent above. /easy for LHF only."
+                + (f"❌ PASS (blocked): {n_passed}\n" if n_passed else "")
+                + "Alerts sent above. /easy for LHF only."
             )
+
+        # PASS alerts: only on explicit request or debug mode
+        if include_pass:
+            await send_pass_alerts(result.get("rejected", []))
+
     except Exception as exc:
         logger.error("_cmd_scan error: %s", exc, exc_info=True)
         await _send(chat_id, f"❌ Scan failed: {exc}")
@@ -129,7 +145,7 @@ async def _cmd_status(args: list[str], chat_id: str) -> None:
             best = spreads[0]
             lhf_label = ""
             if best.lhf:
-                lhf_label = f" [{best.lhf.classification}]"
+                lhf_label = f" [{best.lhf.tier}]"
             top_line = (
                 f"\n🏆 <b>Top Setup:</b> {best.ticker} {best.spread_type}"
                 f" — {best.lhf.score.total if best.lhf else best.score.total}/100{lhf_label}"
@@ -193,9 +209,25 @@ async def _cmd_ticker(args: list[str], chat_id: str) -> None:
 
         if spread.verdict == "TAKE":
             all_alerts = last.get("alerts", []) if last else []
-            lhf  = classify_lhf(spread, all_alerts)
+            lhf    = classify_lhf(spread, all_alerts)
             spread = spread.model_copy(update={"lhf": lhf})
-            await _send(chat_id, format_spread_alert(spread))
+
+            if lhf.classification == "REJECT":
+                # PASS — not sent as an alert; brief ack only
+                reason = lhf.lhf_blocked_by or (lhf.reject_reasons[0] if lhf.reject_reasons else "Hard block")
+                bullets = "\n".join(f"• {r}" for r in lhf.reject_reasons[:3])
+                await _send(chat_id,
+                    f"⏭ <b>{ticker}</b> — ❌ PASS (not alerting channel)\n\n"
+                    f"{bullets}\n\n"
+                    f"<i>Stored in history. /rejects to review.</i>"
+                )
+                try:
+                    from app.services.spread_tracker import record_spread
+                    record_spread(spread)
+                except Exception:
+                    pass
+            else:
+                await _send(chat_id, format_spread_alert(spread))
         else:
             await _send(chat_id,
                 f"❌ <b>{ticker}</b> — No valid spread\n"
@@ -246,19 +278,29 @@ async def _cmd_rejects(args: list[str], chat_id: str) -> None:
             return
 
         rejected = result.get("rejected", [])
-        also_not_easy = [
+        cond_spreads = [
             s for s in result.get("spreads", [])
-            if s.lhf and s.lhf.classification != "LOW_HANGING_FRUIT"
+            if s.lhf and s.lhf.classification == "VALID_SETUP"
+        ]
+        active_spreads = [
+            s for s in result.get("spreads", [])
+            if s.lhf and s.lhf.classification == "ACTIVE_TRADER_SETUP"
         ]
 
-        lines = ["❌ <b>Rejected Setups</b>\n"]
+        lines = ["⏭ <b>Passed / Skipped</b>\n"]
         for r in rejected[:12]:
             lines.append(f"• <b>{r['ticker']}</b>: {r['reason']}")
 
-        if also_not_easy:
-            lines.append("\n⚠️ <b>Valid but not easy:</b>")
-            for s in also_not_easy[:5]:
-                reasons = (s.lhf.reject_reasons or ["No clear reason"])[:1] if s.lhf else ["N/A"]
+        if cond_spreads:
+            lines.append("\n⚠️ <b>CONDITIONAL TAKE (not easy):</b>")
+            for s in cond_spreads[:5]:
+                reasons = (s.lhf.why_not_lhf or s.lhf.reject_reasons or ["No clear reason"])[:1] if s.lhf else ["N/A"]
+                lines.append(f"• <b>{s.ticker}</b>: {reasons[0]}")
+
+        if active_spreads:
+            lines.append("\n⚡ <b>ACTIVE TRADER ONLY (dangerous structure):</b>")
+            for s in active_spreads[:5]:
+                reasons = (s.lhf.why_not_lhf or s.lhf.reject_reasons or ["Active management required"])[:1] if s.lhf else ["N/A"]
                 lines.append(f"• <b>{s.ticker}</b>: {reasons[0]}")
 
         await _send(chat_id, "\n".join(lines))
@@ -281,14 +323,19 @@ async def _cmd_summary(args: list[str], chat_id: str) -> None:
         tickers    = result.get("tickers_scanned", [])
         scanned_at = result.get("scanned_at", "unknown")[:19].replace("T", " ")
 
+        n_active = sum(
+            1 for s in spreads
+            if s.lhf and s.lhf.classification == "ACTIVE_TRADER_SETUP"
+        )
         lines = [
             f"📡 <b>Scan Summary</b>",
             f"Time: {scanned_at}",
             f"Tickers scanned: {len(tickers)}",
             "",
-            f"Valid spreads:       {n_valid}",
+            f"Valid spreads:        {n_valid}",
             f"🍒 Low Hanging Fruit: {n_lhf}",
-            f"Rejected:            {len(rejected)}",
+            f"⚡ Active Trader:     {n_active}",
+            f"Rejected:             {len(rejected)}",
         ]
 
         if spreads:
@@ -350,14 +397,20 @@ async def _cmd_perf(args: list[str], chat_id: str) -> None:
 async def _cmd_help(args: list[str], chat_id: str) -> None:
     await _send(chat_id,
         "🤖 <b>Credit Spread Bot</b>\n\n"
-        "/scan — run full spread scan now\n"
+        "/scan — run full spread scan (✅ TAKE + ⚠️ WATCH only)\n"
+        "/scan all — scan + include ❌ PASS alerts (audit mode)\n"
         "/status — last scan overview\n"
         "/ticker AAPL — analyze one ticker\n"
         "/easy — only LOW HANGING FRUIT setups\n"
-        "/rejects — rejected tickers + reasons\n"
+        "/rejects — passed/blocked tickers + reasons\n"
         "/summary — full scan narrative\n"
         "/perf — recent trade performance\n"
         "/help — this message\n\n"
+        "<b>Alert tiers:</b>\n"
+        "• 🍒 TRUE LHF (✅ TAKE) — passive, normal size\n"
+        "• ✅ VALID SETUP (⚠️ CONDITIONAL TAKE) — active, small size\n"
+        "• ⚡ ACTIVE TRADER (⚡ ACTIVE TRADE ONLY) — active management required\n"
+        "• ❌ PASS — not alertable; use /rejects or /scan all\n\n"
         "<i>Automatic scans run 8:30 AM + hourly 9:30–4:30 PM ET (weekdays)</i>"
     )
 

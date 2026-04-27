@@ -309,6 +309,20 @@ async def send_scan_summary(scan_result: dict) -> None:
 
 # ── Credit Spread + LHF alert formatting (HTML) ───────────────────────────────
 
+# Internal classification → user-facing verdict label
+_DISPLAY_VERDICT: dict[str, str] = {
+    "LOW_HANGING_FRUIT":   "✅ TAKE",
+    "VALID_SETUP":         "⚠️ CONDITIONAL TAKE",
+    "ACTIVE_TRADER_SETUP": "⚡ ACTIVE TRADE ONLY",
+    "REJECT":              "❌ PASS",
+}
+
+# Only these classifications are sent as live alerts.
+# REJECT (❌ PASS) is stored in history only; surfaced via /rejects,
+# debug mode (LHF_DEBUG_ALERTS=true), or /scan all. Never auto-pushed.
+_ALERTABLE: frozenset[str] = frozenset({"LOW_HANGING_FRUIT", "VALID_SETUP", "ACTIVE_TRADER_SETUP"})
+
+
 def _notional_str(val: float) -> str:
     if val >= 1_000_000:
         return f"${val / 1_000_000:.1f}M"
@@ -317,24 +331,64 @@ def _notional_str(val: float) -> str:
     return f"${val:.0f}"
 
 
+def _format_pass_alert(s) -> str:
+    """
+    Compact format for a REJECT (❌ PASS) spread — shows block reason and bullets.
+    Called when LHF classification == REJECT.
+    """
+    lhf     = s.lhf
+    blocked = (
+        lhf.lhf_blocked_by
+        if lhf and lhf.lhf_blocked_by
+        else (lhf.reject_reasons[0] if lhf and lhf.reject_reasons else "Hard block")
+    )
+
+    lines = [
+        "❌ <b>PASS</b>",
+        "",
+        f"<b>{s.ticker}</b> — {s.spread_type}",
+        "",
+        "<b>VERDICT: ❌ PASS</b>",
+        f"Reason: {blocked}",
+    ]
+
+    if lhf and lhf.reject_reasons:
+        lines.append("")
+        for r in lhf.reject_reasons[:4]:
+            lines.append(f"• {r}")
+
+    return "\n".join(lines)
+
+
 def format_spread_alert(spread) -> str:
     """
-    Format a CreditSpreadResult (with optional LHF result) as an HTML
-    Telegram message. Switches header style based on LHF classification.
+    Format a CreditSpreadResult (with LHF result) as an HTML Telegram message.
+
+    Classification → display verdict:
+      LOW_HANGING_FRUIT   → ✅ TAKE          (passive, normal size)
+      VALID_SETUP         → ⚠️ CONDITIONAL TAKE (active, small size)
+      ACTIVE_TRADER_SETUP → ⚡ ACTIVE TRADE ONLY (active, small, must manage)
+      REJECT              → ❌ PASS           (compact format, no trade details)
     """
     from app.models.credit_spread import CreditSpreadResult
     s: CreditSpreadResult = spread
 
-    is_put        = "Put" in s.spread_type
-    suffix        = "P" if is_put else "C"
-    lhf           = s.lhf
+    is_put         = "Put" in s.spread_type
+    suffix         = "P" if is_put else "C"
+    lhf            = s.lhf
     classification = lhf.classification if lhf else "UNKNOWN"
+
+    # REJECT — use compact PASS format (no strike/score details)
+    if classification == "REJECT":
+        return _format_pass_alert(s)
 
     # ── Header ────────────────────────────────────────────────────────────────
     if classification == "LOW_HANGING_FRUIT":
         header = "🍒 <b>LOW HANGING FRUIT</b>"
-    elif classification == "VALID_BUT_NOT_EASY":
-        header = "📊 <b>VALID SETUP</b> (Not Easy)"
+    elif classification == "ACTIVE_TRADER_SETUP":
+        header = "⚡ <b>ACTIVE TRADER SETUP</b>"
+    elif classification == "VALID_SETUP":
+        header = "✅ <b>VALID SETUP</b>"
     else:
         header = "📋 <b>CREDIT SPREAD</b>"
 
@@ -355,13 +409,15 @@ def format_spread_alert(spread) -> str:
     # ── Score block ───────────────────────────────────────────────────────────
     if lhf:
         sc = lhf.score
+        pen_line = f"\n└ Penalties: -{sc.penalties}  (raw {sc.raw_total})" if sc.penalties else ""
         score_block = (
             f"📊 <b>LHF Score: {sc.total}/100</b>\n"
             f"├ Flow:       {sc.flow_clarity}/25\n"
             f"├ Structure:  {sc.structure_safety}/25\n"
             f"├ Regime:     {sc.regime}/20\n"
             f"├ Premium:    {sc.premium_quality}/10\n"
-            f"└ Edge:       {sc.historical_edge}/20"
+            f"{'├' if pen_line else '└'} Edge:       {sc.historical_edge}/20"
+            + pen_line
         )
     else:
         sc2 = s.score
@@ -398,17 +454,71 @@ def format_spread_alert(spread) -> str:
     else:
         extra += "\n⚠️ <b>Landmine Check:</b> None flagged ✅"
 
-    if lhf and classification == "VALID_BUT_NOT_EASY" and lhf.reject_reasons:
+    if lhf and lhf.warnings:
+        for w in lhf.warnings[:3]:
+            extra += f"\n⚠️ {w}"
+
+    if lhf and lhf.lhf_blocked_by and classification != "LOW_HANGING_FRUIT":
+        extra += f"\n🚫 <b>Hard block:</b> {lhf.lhf_blocked_by}"
+
+    # WHY NOT LHF — shown for VALID_SETUP and ACTIVE_TRADER_SETUP
+    if lhf and classification in ("VALID_SETUP", "ACTIVE_TRADER_SETUP") and lhf.why_not_lhf:
+        reasons = "\n".join(f"• {r}" for r in lhf.why_not_lhf[:4])
+        extra += f"\n\n<b>WHY NOT LHF:</b>\n{reasons}"
+    elif lhf and classification == "VALID_SETUP" and lhf.reject_reasons:
         reasons = "\n".join(f"• {r}" for r in lhf.reject_reasons[:3])
         extra += f"\n\n<i>Why not easy:</i>\n{reasons}"
 
-    # ── Verdict ───────────────────────────────────────────────────────────────
-    if classification == "LOW_HANGING_FRUIT":
-        verdict_line = "<b>VERDICT: ✅ TAKE</b>"
-    elif classification == "VALID_BUT_NOT_EASY":
-        verdict_line = "<b>VERDICT: ⚠️ TAKE (cautious sizing)</b>"
+    # ── Verdict + trade characterization ─────────────────────────────────────
+    display      = _DISPLAY_VERDICT.get(classification, "⚠️ CONDITIONAL TAKE")
+    verdict_parts = [f"<b>VERDICT: {display}</b>"]
+
+    if lhf:
+        verdict_parts.append(f"TRADE_STYLE: {lhf.trade_style}")
+        verdict_parts.append(f"SIZE: {lhf.size_recommendation}")
+        if lhf.gamma_risk != "LOW":
+            verdict_parts.append(f"GAMMA_RISK: <b>{lhf.gamma_risk}</b>")
+        if lhf.do_not_hold_blindly:
+            verdict_parts.append("DO_NOT_HOLD_BLINDLY: <b>TRUE ⚠️</b>")
+
+        # Management — only for non-LHF tiers where active management matters
+        if lhf.management and classification != "LOW_HANGING_FRUIT":
+            m = lhf.management
+            verdict_parts.append("")
+            verdict_parts.append("<b>MANAGEMENT:</b>")
+            if m.get("entry"):
+                verdict_parts.append(f"• Entry: {m['entry']}")
+            if m.get("stop"):
+                verdict_parts.append(f"• Stop: {m['stop']}")
+            if m.get("profit_taking"):
+                verdict_parts.append(f"• Profit: {m['profit_taking']}")
+            if m.get("invalidation"):
+                verdict_parts.append(f"• Invalidation: {m['invalidation']}")
+        elif lhf.management and classification == "LOW_HANGING_FRUIT":
+            m = lhf.management
+            verdict_parts.append(f"<i>Stop: {m.get('stop','50% of max risk')}</i>")
+
+    verdict_block = "\n".join(verdict_parts)
+
+    # ── BOT_DATA (machine-readable) ───────────────────────────────────────────
+    if lhf:
+        sc = lhf.score
+        flow_q   = "STRONG" if sc.flow_clarity >= 18 else ("MODERATE" if sc.flow_clarity >= 12 else "WEAK")
+        struct_q = "STRONG" if sc.structure_safety >= 18 else ("MODERATE" if sc.structure_safety >= 12 else "WEAK")
+        regime_q = "STRONG" if sc.regime >= 16 else ("MODERATE" if sc.regime >= 10 else "WEAK")
+        bot_data = (
+            f"\n<pre>BOT_DATA\n"
+            f"CLASSIFICATION={classification}\n"
+            f"VERDICT={display}\n"
+            f"TRADE_STYLE={lhf.trade_style}\n"
+            f"SIZE={lhf.size_recommendation}\n"
+            f"GAMMA_RISK={lhf.gamma_risk}\n"
+            f"FLOW_QUALITY={flow_q}\n"
+            f"STRUCTURE_QUALITY={struct_q}\n"
+            f"REGIME_QUALITY={regime_q}</pre>"
+        )
     else:
-        verdict_line = f"<b>VERDICT: ✅ TAKE</b>"
+        bot_data = ""
 
     parts = [
         header,
@@ -425,23 +535,58 @@ def format_spread_alert(spread) -> str:
         struct_block,
         extra,
         "",
-        verdict_line,
+        verdict_block,
+        bot_data,
     ]
 
     return "\n".join(parts)
 
 
+async def send_system_alert(text: str) -> bool:
+    """Send a plain-text ops/system alert (no parse_mode markup)."""
+    if not settings.telegram_enabled:
+        return False
+    token   = settings.telegram_bot_token
+    chat_id = settings.telegram_chat_id
+    if not token or not chat_id:
+        return False
+    url = _SEND_URL.format(token=token)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json={
+                "chat_id":                  chat_id,
+                "text":                     text[:4096],
+                "disable_web_page_preview": True,
+            })
+            resp.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.error(f"Telegram system alert error: {exc}")
+        return False
+
+
 async def send_spread_alerts(spreads: list) -> None:
     """
-    Send Telegram alerts for all TAKE spreads.
-    LHF spreads are sent first. Persists each to spread_tracker.
+    Send Telegram alerts for ✅ TAKE and ⚠️ WATCH spreads only.
+
+    ❌ PASS (REJECT) classifications are never sent here — they go to
+    history/rejects only. Use send_pass_alerts() for the explicit paths
+    (debug mode, /rejects, /scan all).
     """
     if not settings.telegram_enabled:
         logger.info("send_spread_alerts: Telegram disabled — skipping.")
         return
 
-    valid = [s for s in spreads if s.verdict == "TAKE"]
-    logger.info("send_spread_alerts: %d spread(s) to send", len(valid))
+    # Explicit guard: only TAKE/WATCH reach the channel — PASS is never alertable
+    valid = [
+        s for s in spreads
+        if s.lhf and s.lhf.classification in _ALERTABLE
+        or (not s.lhf and s.verdict == "TAKE")
+    ]
+    logger.info(
+        "send_spread_alerts: %d/%d spread(s) alertable (PASS suppressed)",
+        len(valid), len(spreads),
+    )
 
     try:
         from app.services.spread_tracker import record_spread
@@ -457,3 +602,28 @@ async def send_spread_alerts(spreads: list) -> None:
                 record_spread(spread)
             except Exception as exc:
                 logger.warning("spread_tracker.record_spread failed: %s", exc)
+
+
+async def send_pass_alerts(rejected: list) -> None:
+    """
+    Send ❌ PASS alerts for LHF-blocked spreads.
+
+    Only called in three explicit paths:
+      1. /rejects command (user-requested)
+      2. LHF_DEBUG_ALERTS=true in env
+      3. /scan all (manual scan requesting full output)
+
+    Never called from automated scan flow.
+    """
+    if not settings.telegram_enabled:
+        return
+
+    # Only items that have a full spread object (LHF-blocked, not base-engine SKIPs)
+    pass_items = [r for r in rejected if r.get("spread")]
+    if not pass_items:
+        return
+
+    logger.info("send_pass_alerts: sending %d PASS alert(s)", len(pass_items))
+    await _post(f"🔍 <b>PASS Alerts ({len(pass_items)} blocked setup(s))</b>")
+    for item in pass_items:
+        await _post(format_spread_alert(item["spread"]))

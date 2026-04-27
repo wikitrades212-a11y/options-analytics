@@ -12,19 +12,32 @@ class SpreadScoreBreakdown(BaseModel):
 
 class LHFScoreBreakdown(BaseModel):
     flow_clarity: int      # 0-25: directional dominance, grade, Vol/OI
-    structure_safety: int  # 0-25: OTM%, DTE, delta position
-    regime: int            # 0-20: market-wide direction consensus
+    structure_safety: int  # 0-25: IV-adjusted sigma distance, DTE, delta
+    regime: int            # 0-20: market-wide direction consensus (≥70% required)
     premium_quality: int   # 0-10: credit size vs risk:reward
     historical_edge: int   # 0-20: past performance from signals DB
-    total: int             # 0-100
+    raw_total: int         # sum before penalties
+    penalties: int         # total deducted (leveraged ETF, regime conflict, etc.)
+    total: int             # final score (raw_total - penalties), floor 0
 
 
 class LHFResult(BaseModel):
-    classification: str        # LOW_HANGING_FRUIT / VALID_BUT_NOT_EASY / REJECT
+    classification: str        # LOW_HANGING_FRUIT / VALID_SETUP / ACTIVE_TRADER_SETUP / REJECT
+    tier: str                  # display label
     score: LHFScoreBreakdown
     why_easy: List[str]        # bullet points explaining why it qualifies
     landmines: List[str]       # risk flags that remain
+    warnings: List[str]        # explicit ⚠️ flags (impossible to ignore)
     reject_reasons: List[str]  # why it's not LHF (if applicable)
+    lhf_blocked_by: Optional[str] = None  # hard-block reason even if score ≥ 85
+
+    # ── Trade characterization ─────────────────────────────────────────────────
+    trade_style: str = "PASSIVE"           # PASSIVE / ACTIVE / WATCH_ONLY
+    gamma_risk: str = "LOW"                # HIGH / MEDIUM / LOW
+    size_recommendation: str = "NORMAL"   # NORMAL / SMALL / NO_TRADE
+    why_not_lhf: List[str] = []           # explicit LHF disqualifiers
+    management: dict = {}                  # entry / stop / profit_taking / invalidation
+    do_not_hold_blindly: bool = False      # True for ACTIVE_TRADER_SETUP
 
 
 class FlowConfirmation(BaseModel):
@@ -63,6 +76,7 @@ class CreditSpreadResult(BaseModel):
 
     verdict: str                  # "TAKE" | "SKIP"
     reject_reason: Optional[str] = None
+    iv_at_sell: float = 0.0       # implied volatility of the short leg (for expected-move calc)
 
     # Populated after second-stage LHF filter
     lhf: Optional[LHFResult] = None

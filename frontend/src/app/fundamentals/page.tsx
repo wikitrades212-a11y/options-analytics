@@ -197,9 +197,20 @@ export default function FundamentalsPage() {
               </span>
             )}
             <div className="ml-auto flex items-center gap-4 text-sm">
-              <div>
+              <div className="flex items-baseline gap-1.5">
                 <span className="text-text-muted">Price </span>
                 <span className="font-bold tabular-nums text-text-primary">${data.current_price.toFixed(2)}</span>
+                {data.price_source && (
+                  <span className={clsx(
+                    "text-2xs px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide",
+                    data.price_source === "tradier"   ? "bg-green-500/10 text-green-600" :
+                    data.price_source === "alpaca"    ? "bg-blue-500/10 text-blue-600" :
+                    data.price_source === "robinhood" ? "bg-emerald-500/10 text-emerald-600" :
+                    "bg-bg-raised text-text-muted"
+                  )}>
+                    {data.price_source}
+                  </span>
+                )}
               </div>
               {data.market_cap && (
                 <div>

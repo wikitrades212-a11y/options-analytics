@@ -231,6 +231,7 @@ export interface StockAnalysis {
   ticker: string;
   company_name: string;
   current_price: number;
+  price_source?: string;
   market_cap: number | null;
   sector: string | null;
   valuation_metrics: ValuationMetrics;
